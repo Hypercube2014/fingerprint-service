@@ -288,6 +288,24 @@ public class FingerprintController {
     }
 
     /**
+     * Test FPSPLIT_Init with different dimensions
+     */
+    @GetMapping("/test/fpsplit-dimensions")
+    public ResponseEntity<Map<String, Object>> testFpSplitDimensions() {
+        try {
+            Map<String, Object> dimensionTest = deviceService.testFpSplitDimensions();
+            return ResponseEntity.ok(dimensionTest);
+        } catch (Exception e) {
+            logger.error("Error testing FPSPLIT dimensions: {}", e.getMessage(), e);
+            return ResponseEntity.status(500).body(Map.of(
+                    "success", false,
+                    "message", "Error testing FPSPLIT dimensions: " + e.getMessage(),
+                    "timestamp", System.currentTimeMillis()
+            ));
+        }
+    }
+
+    /**
      * Test image storage with different formats
      */
     @PostMapping("/storage/test")

@@ -391,6 +391,84 @@ public class FingerprintDeviceService {
     }
 
     /**
+     * Test FPSPLIT_Init with different dimension combinations
+     */
+    public Map<String, Object> testFpSplitDimensions() {
+        Map<String, Object> results = new HashMap<>();
+        List<Map<String, Object>> dimensionTests = new ArrayList<>();
+
+        try {
+            // Test different dimension combinations
+            int[][] testDimensions = {
+                    {1600, 1500},  // Original dimensions
+                    {800, 600},     // VGA
+                    {640, 480},     // Standard VGA
+                    {400, 300},     // Common fingerprint size
+                    {300, 400},     // Portrait orientation
+                    {200, 150},     // Very small
+                    {1024, 768},    // XGA
+                    {1280, 720},    // HD
+                    {1920, 1080}    // Full HD
+            };
+
+            for (int[] dims : testDimensions) {
+                int width = dims[0];
+                int height = dims[1];
+
+                Map<String, Object> testResult = new HashMap<>();
+                testResult.put("width", width);
+                testResult.put("height", height);
+                testResult.put("dimensions", width + "x" + height);
+
+                try {
+                    logger.info("Testing FPSPLIT_Init with dimensions: {}x{}", width, height);
+                    int ret = FpSplitLoad.instance.FPSPLIT_Init(width, height, 1);
+
+                    testResult.put("return_code", ret);
+                    testResult.put("success", ret == 1);
+                    testResult.put("status", ret == 1 ? "SUCCESS" : "FAILED");
+
+                    if (ret == 1) {
+                        logger.info("FPSPLIT_Init successful with dimensions: {}x{}", width, height);
+                        // Clean up after successful test
+                        FpSplitLoad.instance.FPSPLIT_Uninit();
+                    } else {
+                        logger.warn("FPSPLIT_Init failed with dimensions {}x{}, return code: {}", width, height, ret);
+                    }
+
+                } catch (Exception e) {
+                    testResult.put("return_code", -1);
+                    testResult.put("success", false);
+                    testResult.put("status", "ERROR");
+                    testResult.put("error", e.getMessage());
+                    logger.error("Exception testing FPSPLIT_Init with dimensions {}x{}: {}", width, height, e.getMessage());
+                }
+
+                dimensionTests.add(testResult);
+            }
+
+            results.put("dimension_tests", dimensionTests);
+            results.put("success", true);
+            results.put("total_tests", dimensionTests.size());
+
+            // Find working dimensions
+            List<Map<String, Object>> workingDimensions = dimensionTests.stream()
+                    .filter(test -> (Boolean) test.get("success"))
+                    .toList();
+
+            results.put("working_dimensions", workingDimensions);
+            results.put("working_count", workingDimensions.size());
+
+        } catch (Exception e) {
+            logger.error("Error testing FPSPLIT dimensions: {}", e.getMessage(), e);
+            results.put("success", false);
+            results.put("error", e.getMessage());
+        }
+
+        return results;
+    }
+
+    /**
      * Split fingerprints from captured image
      */
     public Map<String, Object> splitFingerprints(int channel, int width, int height,
@@ -423,13 +501,51 @@ public class FingerprintDeviceService {
             byte[] imgBuf = Base64.getDecoder().decode(base64Image);
 
             // Initialize split library
+            logger.info("Attempting to initialize FPSPLIT library with dimensions: {}x{}, preview: 1", width, height);
+
+            // Try different dimension combinations if the first one fails
             int ret = FpSplitLoad.instance.FPSPLIT_Init(width, height, 1);
             if (ret != 1) {
-                logger.error("Failed to initialize split library for channel: {}. Return code: {}", channel, ret);
-                return Map.of(
-                        "success", false,
-                        "error_details", "Failed to initialize split library. Return code: " + ret
-                );
+                logger.warn("FPSPLIT_Init failed with dimensions {}x{}, trying smaller dimensions", width, height);
+
+                // Try with smaller dimensions that might be more compatible
+                int[] testDimensions = {
+                        800, 600,   // Standard VGA
+                        640, 480,   // VGA
+                        400, 300,   // Common fingerprint size
+                        300, 400,   // Portrait orientation
+                        200, 150    // Very small test
+                };
+
+                boolean initSuccess = false;
+                for (int i = 0; i < testDimensions.length; i += 2) {
+                    int testWidth = testDimensions[i];
+                    int testHeight = testDimensions[i + 1];
+
+                    logger.info("Trying FPSPLIT_Init with dimensions: {}x{}", testWidth, testHeight);
+                    ret = FpSplitLoad.instance.FPSPLIT_Init(testWidth, testHeight, 1);
+
+                    if (ret == 1) {
+                        logger.info("FPSPLIT_Init successful with dimensions: {}x{}", testWidth, testHeight);
+                        // Update the working dimensions
+                        width = testWidth;
+                        height = testHeight;
+                        initSuccess = true;
+                        break;
+                    } else {
+                        logger.warn("FPSPLIT_Init failed with dimensions {}x{}, return code: {}", testWidth, testHeight, ret);
+                    }
+                }
+
+                if (!initSuccess) {
+                    logger.error("All FPSPLIT_Init attempts failed for channel: {}. Final return code: {}", channel, ret);
+                    return Map.of(
+                            "success", false,
+                            "error_details", "Failed to initialize split library after trying multiple dimensions. Final return code: " + ret
+                    );
+                }
+            } else {
+                logger.info("FPSPLIT_Init successful with original dimensions: {}x{}", width, height);
             }
 
             try {
