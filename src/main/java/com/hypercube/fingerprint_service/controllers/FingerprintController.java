@@ -1,264 +1,304 @@
-package com.hypercube.fingerprint_service.controllers;
+package com.hypercube.fingerprint_service.services;
 
-import com.hypercube.fingerprint_service.services.FingerprintDeviceService;
+import com.hypercube.fingerprint_service.sdk.ID_FprCapLoad;
+import com.hypercube.fingerprint_service.sdk.GamcLoad;
+import com.hypercube.fingerprint_service.sdk.FpSplitLoad;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.http.ResponseEntity;
-import org.springframework.web.bind.annotation.*;
+import org.springframework.stereotype.Service;
 
 import java.util.Base64;
-import java.util.Date;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
-@RestController
-@RequestMapping("/api/fingerprint")
-@CrossOrigin(origins = "*")
-public class FingerprintController {
+@Service
+public class FingerprintDeviceService {
 
-    private static final Logger logger = LoggerFactory.getLogger(FingerprintController.class);
+    private static final Logger logger = LoggerFactory.getLogger(FingerprintDeviceService.class);
+    private static final Map<Integer, Boolean> deviceStatus = new ConcurrentHashMap<>();
+
+    private final boolean isWindows;
+    private final boolean isLinux;
 
     @Autowired
-    private FingerprintDeviceService deviceService;
+    private FingerprintFileStorageService fileStorageService;
 
-    /**
-     * Health check endpoint
-     */
-    @GetMapping("/health")
-    public ResponseEntity<Map<String, Object>> healthCheck() {
-        return ResponseEntity.ok(Map.of(
-                "status", "healthy",
-                "service", "BIO600 Fingerprint Service",
-                "platform_info", deviceService.getPlatformInfo(),
-                "timestamp", System.currentTimeMillis()
-        ));
+    public FingerprintDeviceService() {
+        String os = System.getProperty("os.name").toLowerCase();
+        this.isWindows = os.contains("win");
+        this.isLinux = os.contains("linux") || os.contains("unix");
+
+        logger.info("Detected OS: {} (Windows: {}, Linux: {})", os, isWindows, isLinux);
     }
 
     /**
-     * Initialize fingerprint device
+     * Initialize fingerprint device for a specific channel
      */
-    @PostMapping("/init")
-    public ResponseEntity<Map<String, Object>> initializeDevice(
-            @RequestParam(defaultValue = "0") int channel) {
-
+    public boolean initializeDevice(int channel) {
         try {
-            // Check platform compatibility first
-            if (!deviceService.isPlatformSupported()) {
-                return ResponseEntity.status(400).body(Map.of(
-                        "success", false,
-                        "message", "Platform not supported. This SDK requires Windows.",
-                        "platform_info", deviceService.getPlatformInfo(),
-                        "channel", channel,
-                        "timestamp", System.currentTimeMillis()
-                ));
+            logger.info("Initializing fingerprint device for channel: {}", channel);
+
+            // Check platform compatibility
+            if (!isWindows) {
+                logger.error("Platform not supported. This SDK requires Windows. Current platform: {}",
+                        System.getProperty("os.name"));
+                return false;
             }
 
-            boolean success = deviceService.initializeDevice(channel);
-
-            if (success) {
-                return ResponseEntity.ok(Map.of(
-                        "success", true,
-                        "message", "Device initialized successfully",
-                        "channel", channel,
-                        "platform_info", deviceService.getPlatformInfo(),
-                        "timestamp", System.currentTimeMillis()
-                ));
+            int ret = ID_FprCapLoad.ID_FprCapinterface.instance.LIVESCAN_Init();
+            if (ret == 1) {
+                deviceStatus.put(channel, true);
+                logger.info("Device initialized successfully for channel: {}", channel);
+                return true;
             } else {
-                String errorInfo = deviceService.getErrorInfo(-106); // Get info for error code -106
-                return ResponseEntity.status(500).body(Map.of(
-                        "success", false,
-                        "message", "Device initialization failed",
-                        "channel", channel,
-                        "error_code", -106,
-                        "error_info", errorInfo,
-                        "platform_info", deviceService.getPlatformInfo(),
-                        "timestamp", System.currentTimeMillis()
-                ));
+                logger.error("Device initialization failed for channel: {} with error code: {}", channel, ret);
+                return false;
             }
+        } catch (UnsatisfiedLinkError e) {
+            logger.error("Native library cannot be loaded. This is likely because you're running on Linux but the SDK requires Windows DLLs. Error: {}", e.getMessage());
+            return false;
         } catch (Exception e) {
-            logger.error("Error initializing device for channel {}: {}", channel, e.getMessage(), e);
-            return ResponseEntity.status(500).body(Map.of(
-                    "success", false,
-                    "message", "Error initializing device: " + e.getMessage(),
-                    "channel", channel,
-                    "platform_info", deviceService.getPlatformInfo(),
-                    "timestamp", System.currentTimeMillis()
-            ));
+            logger.error("Error initializing device for channel: {}: {}", channel, e.getMessage(), e);
+            return false;
         }
     }
 
     /**
-     * Get/Capture fingerprint image - Main endpoint for taking fingerprint pictures
+     * Capture fingerprint image
      */
-    @PostMapping("/capture")
-    public ResponseEntity<Map<String, Object>> captureFingerprint(
-            @RequestParam(defaultValue = "0") int channel,
-            @RequestParam(defaultValue = "1600") int width,
-            @RequestParam(defaultValue = "1500") int height) {
-
+    public Map<String, Object> captureFingerprint(int channel, int width, int height) {
         try {
-            // Check platform compatibility first
-            if (!deviceService.isPlatformSupported()) {
-                return ResponseEntity.status(400).body(Map.of(
+            logger.info("Capturing fingerprint for channel: {} with dimensions: {}x{}", channel, width, height);
+
+            // Check platform compatibility
+            if (!isWindows) {
+                logger.error("Platform not supported. This SDK requires Windows.");
+                return Map.of(
                         "success", false,
-                        "message", "Platform not supported. This SDK requires Windows.",
-                        "platform_info", deviceService.getPlatformInfo(),
-                        "channel", channel,
-                        "timestamp", System.currentTimeMillis()
-                ));
+                        "error_details", "Platform not supported. This SDK requires Windows."
+                );
             }
 
-            // Check if device is initialized
-            if (!deviceService.isDeviceInitialized(channel)) {
-                logger.info("Device not initialized for channel {}, attempting to initialize", channel);
-                boolean initSuccess = deviceService.initializeDevice(channel);
-                if (!initSuccess) {
-                    return ResponseEntity.status(500).body(Map.of(
-                            "success", false,
-                            "message", "Device not initialized and initialization failed",
-                            "channel", channel,
-                            "platform_info", deviceService.getPlatformInfo(),
-                            "timestamp", System.currentTimeMillis()
-                    ));
-                }
+            // Begin capture
+            int ret = ID_FprCapLoad.ID_FprCapinterface.instance.LIVESCAN_BeginCapture(channel);
+            if (ret != 1) {
+                logger.error("Failed to begin capture for channel: {} with error code: {}", channel, ret);
+                return Map.of(
+                        "success", false,
+                        "error_details", "Failed to begin capture with error code: " + ret
+                );
             }
 
-            // Capture the fingerprint image
-            Map<String, Object> captureResult = deviceService.captureFingerprint(channel, width, height);
+            // Get fingerprint data
+            byte[] rawData = new byte[width * height];
+            ret = ID_FprCapLoad.ID_FprCapinterface.instance.LIVESCAN_GetFPRawData(channel, rawData);
 
-            if ((Boolean) captureResult.get("success")) {
-                return ResponseEntity.ok(Map.of(
-                        "success", true,
-                        "message", "Fingerprint captured successfully",
-                        "image", captureResult.get("image"),
-                        "width", width,
-                        "height", height,
-                        "quality_score", captureResult.get("quality_score"),
-                        "channel", channel,
-                        "captured_at", new Date(),
-                        "platform_info", deviceService.getPlatformInfo(),
-                        "timestamp", System.currentTimeMillis()
-                ));
+            if (ret != 1) {
+                ID_FprCapLoad.ID_FprCapinterface.instance.LIVESCAN_EndCapture(channel);
+                logger.error("Failed to capture fingerprint data for channel: {} with error code: {}", channel, ret);
+                return Map.of(
+                        "success", false,
+                        "error_details", "Failed to capture fingerprint data with error code: " + ret
+                );
+            }
+
+            // End capture
+            ID_FprCapLoad.ID_FprCapinterface.instance.LIVESCAN_EndCapture(channel);
+
+            // Convert to base64
+            String base64Image = Base64.getEncoder().encodeToString(rawData);
+
+            // Assess quality
+            int quality = assessFingerprintQuality(rawData, width, height);
+
+            // Store the image automatically
+            String customName = String.format("channel_%d_%dx%d", channel, width, height);
+            FingerprintFileStorageService.FileStorageResult storageResult =
+                    fileStorageService.storeFingerprintImageOrganized(rawData, "standard", customName);
+
+            if (storageResult.isSuccess()) {
+                logger.info("Fingerprint captured and stored successfully for channel: {} with quality: {}. File: {}",
+                        channel, quality, storageResult.getFilePath());
             } else {
-                return ResponseEntity.status(500).body(Map.of(
-                        "success", false,
-                        "message", "Failed to capture fingerprint",
-                        "error_details", captureResult.get("error_details"),
-                        "channel", channel,
-                        "platform_info", deviceService.getPlatformInfo(),
-                        "timestamp", System.currentTimeMillis()
-                ));
+                logger.warn("Fingerprint captured but storage failed for channel: {}. Error: {}",
+                        channel, storageResult.getMessage());
             }
 
-        } catch (Exception e) {
-            logger.error("Error capturing fingerprint for channel {}: {}", channel, e.getMessage(), e);
-            return ResponseEntity.status(500).body(Map.of(
-                    "success", false,
-                    "message", "Error capturing fingerprint: " + e.getMessage(),
-                    "channel", channel,
-                    "platform_info", deviceService.getPlatformInfo(),
-                    "timestamp", System.currentTimeMillis()
-            ));
-        }
-    }
-
-    /**
-     * Simple GET endpoint for testing fingerprint capture (same functionality as POST /capture)
-     */
-    @GetMapping("/capture")
-    public ResponseEntity<Map<String, Object>> captureFingerprintGet(
-            @RequestParam(defaultValue = "0") int channel,
-            @RequestParam(defaultValue = "1600") int width,
-            @RequestParam(defaultValue = "1500") int height) {
-
-        // Reuse the POST endpoint logic
-        return captureFingerprint(channel, width, height);
-    }
-
-    /**
-     * Get device status
-     */
-    @GetMapping("/status")
-    public ResponseEntity<Map<String, Object>> getDeviceStatus() {
-        try {
-            Map<Integer, Boolean> status = deviceService.getDeviceStatus();
-            return ResponseEntity.ok(Map.of(
+            return Map.of(
                     "success", true,
-                    "device_status", status,
-                    "platform_info", deviceService.getPlatformInfo(),
-                    "timestamp", System.currentTimeMillis()
-            ));
-        } catch (Exception e) {
-            logger.error("Error getting device status: {}", e.getMessage(), e);
-            return ResponseEntity.status(500).body(Map.of(
+                    "image", base64Image,
+                    "quality_score", quality,
+                    "storage_success", storageResult.isSuccess(),
+                    "file_path", storageResult.getFilePath(),
+                    "filename", storageResult.getFilename(),
+                    "file_size", storageResult.getFileSize()
+            );
+
+        } catch (UnsatisfiedLinkError e) {
+            logger.error("Native library cannot be loaded. This is likely because you're running on Linux but the SDK requires Windows DLLs. Error: {}", e.getMessage());
+            return Map.of(
                     "success", false,
-                    "message", "Error getting device status: " + e.getMessage(),
-                    "platform_info", deviceService.getPlatformInfo(),
-                    "timestamp", System.currentTimeMillis()
-            ));
+                    "error_details", "Native library cannot be loaded. This SDK requires Windows."
+            );
+        } catch (Exception e) {
+            logger.error("Error capturing fingerprint for channel: {}: {}", channel, e.getMessage(), e);
+            return Map.of(
+                    "success", false,
+                    "error_details", "Error capturing fingerprint: " + e.getMessage()
+            );
         }
     }
 
     /**
-     * Close device
+     * Assess fingerprint quality
      */
-    @PostMapping("/close")
-    public ResponseEntity<Map<String, Object>> closeDevice(
-            @RequestParam(defaultValue = "0") int channel) {
-
+    private int assessFingerprintQuality(byte[] imageData, int width, int height) {
         try {
-            // Check platform compatibility first
-            if (!deviceService.isPlatformSupported()) {
-                return ResponseEntity.status(400).body(Map.of(
-                        "success", false,
-                        "message", "Platform not supported. This SDK requires Windows.",
-                        "platform_info", deviceService.getPlatformInfo(),
-                        "channel", channel,
-                        "timestamp", System.currentTimeMillis()
-                ));
+            // Use the SDK's quality assessment if available
+            if (GamcLoad.instance.MOSAIC_IsSupportFingerQuality() == 1) {
+                return GamcLoad.instance.MOSAIC_FingerQuality(imageData, width, height);
             }
 
-            boolean success = deviceService.closeDevice(channel);
+            // Fallback to basic quality assessment
+            return calculateBasicQuality(imageData, width, height);
 
-            if (success) {
-                return ResponseEntity.ok(Map.of(
-                        "success", true,
-                        "message", "Device closed successfully",
-                        "channel", channel,
-                        "platform_info", deviceService.getPlatformInfo(),
-                        "timestamp", System.currentTimeMillis()
-                ));
-            } else {
-                return ResponseEntity.status(500).body(Map.of(
-                        "success", false,
-                        "message", "Failed to close device",
-                        "channel", channel,
-                        "platform_info", deviceService.getPlatformInfo(),
-                        "timestamp", System.currentTimeMillis()
-                ));
-            }
         } catch (Exception e) {
-            logger.error("Error closing device for channel {}: {}", channel, e.getMessage(), e);
-            return ResponseEntity.status(500).body(Map.of(
-                    "success", false,
-                    "message", "Error closing device: " + e.getMessage(),
-                    "channel", channel,
-                    "platform_info", deviceService.getPlatformInfo(),
-                    "timestamp", System.currentTimeMillis()
-            ));
+            logger.warn("Error assessing fingerprint quality, using default score: {}", e.getMessage());
+            // Return default quality score
+            return 75;
         }
+    }
+
+    /**
+     * Basic quality assessment algorithm
+     */
+    private int calculateBasicQuality(byte[] imageData, int width, int height) {
+        if (imageData == null || imageData.length == 0) {
+            return 0;
+        }
+
+        // Calculate average intensity
+        long totalIntensity = 0;
+        for (byte b : imageData) {
+            totalIntensity += (b & 0xFF);
+        }
+        double avgIntensity = (double) totalIntensity / imageData.length;
+
+        // Calculate standard deviation
+        double variance = 0;
+        for (byte b : imageData) {
+            double diff = (b & 0xFF) - avgIntensity;
+            variance += diff * diff;
+        }
+        variance /= imageData.length;
+        double stdDev = Math.sqrt(variance);
+
+        // Quality score based on contrast and brightness
+        int quality = 0;
+
+        // Good contrast (high std dev) increases quality
+        if (stdDev > 30) quality += 30;
+        else if (stdDev > 20) quality += 20;
+        else if (stdDev > 10) quality += 10;
+
+        // Good brightness (not too dark, not too bright) increases quality
+        if (avgIntensity > 50 && avgIntensity < 200) quality += 40;
+        else if (avgIntensity > 30 && avgIntensity < 220) quality += 20;
+
+        // Check for non-zero pixels (fingerprint presence)
+        int nonZeroPixels = 0;
+        for (byte b : imageData) {
+            if ((b & 0xFF) > 0) nonZeroPixels++;
+        }
+        double coverage = (double) nonZeroPixels / imageData.length;
+
+        if (coverage > 0.3 && coverage < 0.8) quality += 30;
+        else if (coverage > 0.1 && coverage < 0.9) quality += 15;
+
+        return Math.min(100, Math.max(0, quality));
+    }
+
+    /**
+     * Check if device is initialized for a specific channel
+     */
+    public boolean isDeviceInitialized(int channel) {
+        return deviceStatus.getOrDefault(channel, false);
+    }
+
+    /**
+     * Get device status for all channels
+     */
+    public Map<Integer, Boolean> getDeviceStatus() {
+        return new ConcurrentHashMap<>(deviceStatus);
+    }
+
+    /**
+     * Close device for a specific channel
+     */
+    public boolean closeDevice(int channel) {
+        try {
+            if (!isWindows) {
+                logger.error("Platform not supported. This SDK requires Windows.");
+                return false;
+            }
+
+            int ret = ID_FprCapLoad.ID_FprCapinterface.instance.LIVESCAN_Close();
+            if (ret == 1) {
+                deviceStatus.put(channel, false);
+                logger.info("Device closed successfully for channel: {}", channel);
+                return true;
+            } else {
+                logger.error("Failed to close device for channel: {} with error code: {}", channel, ret);
+                return false;
+            }
+        } catch (UnsatisfiedLinkError e) {
+            logger.error("Native library cannot be loaded. This is likely because you're running on Linux but the SDK requires Windows DLLs. Error: {}", e.getMessage());
+            return false;
+        } catch (Exception e) {
+            logger.error("Error closing device for channel: {}: {}", channel, e.getMessage(), e);
+            return false;
+        }
+    }
+
+    /**
+     * Get error information for a specific error code
+     */
+    public String getErrorInfo(int errorCode) {
+        try {
+            if (!isWindows) {
+                return "Platform not supported. This SDK requires Windows.";
+            }
+
+            byte[] errorInfo = new byte[256];
+            int ret = ID_FprCapLoad.ID_FprCapinterface.instance.LIVESCAN_GetErrorInfo(errorCode, errorInfo);
+            if (ret == 1) {
+                return new String(errorInfo).trim();
+            } else {
+                return "Unknown error code: " + errorCode;
+            }
+        } catch (UnsatisfiedLinkError e) {
+            return "Native library cannot be loaded. This SDK requires Windows.";
+        } catch (Exception e) {
+            logger.error("Error getting error info for code {}: {}", errorCode, e.getMessage());
+            return "Error retrieving error information";
+        }
+    }
+
+    /**
+     * Check if the current platform is supported
+     */
+    public boolean isPlatformSupported() {
+        return isWindows;
     }
 
     /**
      * Get platform information
      */
-    @GetMapping("/platform")
-    public ResponseEntity<Map<String, Object>> getPlatformInfo() {
-        return ResponseEntity.ok(Map.of(
-                "success", true,
-                "platform_info", deviceService.getPlatformInfo(),
-                "supported", deviceService.isPlatformSupported(),
-                "timestamp", System.currentTimeMillis()
-        ));
+    public String getPlatformInfo() {
+        return String.format("OS: %s, Architecture: %s, Supported: %s",
+                System.getProperty("os.name"),
+                System.getProperty("os.arch"),
+                isPlatformSupported());
     }
 }

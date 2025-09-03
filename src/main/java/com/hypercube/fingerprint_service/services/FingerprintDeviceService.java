@@ -5,6 +5,7 @@ import com.hypercube.fingerprint_service.sdk.GamcLoad;
 import com.hypercube.fingerprint_service.sdk.FpSplitLoad;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import java.util.Base64;
@@ -19,6 +20,9 @@ public class FingerprintDeviceService {
 
     private final boolean isWindows;
     private final boolean isLinux;
+
+    @Autowired
+    private FingerprintFileStorageService fileStorageService;
 
     public FingerprintDeviceService() {
         String os = System.getProperty("os.name").toLowerCase();
@@ -108,12 +112,27 @@ public class FingerprintDeviceService {
             // Assess quality
             int quality = assessFingerprintQuality(rawData, width, height);
 
-            logger.info("Fingerprint captured successfully for channel: {} with quality: {}", channel, quality);
+            // Store the image automatically
+            String customName = String.format("channel_%d_%dx%d", channel, width, height);
+            FingerprintFileStorageService.FileStorageResult storageResult =
+                    fileStorageService.storeFingerprintImageOrganized(rawData, "standard", customName);
+
+            if (storageResult.isSuccess()) {
+                logger.info("Fingerprint captured and stored successfully for channel: {} with quality: {}. File: {}",
+                        channel, quality, storageResult.getFilePath());
+            } else {
+                logger.warn("Fingerprint captured but storage failed for channel: {}. Error: {}",
+                        channel, storageResult.getMessage());
+            }
 
             return Map.of(
                     "success", true,
                     "image", base64Image,
-                    "quality_score", quality
+                    "quality_score", quality,
+                    "storage_success", storageResult.isSuccess(),
+                    "file_path", storageResult.getFilePath(),
+                    "filename", storageResult.getFilename(),
+                    "file_size", storageResult.getFileSize()
             );
 
         } catch (UnsatisfiedLinkError e) {
