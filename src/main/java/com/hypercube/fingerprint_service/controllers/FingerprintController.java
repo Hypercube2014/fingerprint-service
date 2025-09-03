@@ -131,7 +131,6 @@ public class FingerprintController {
                 Map<String, Object> response = new HashMap<>();
                 response.put("success", true);
                 response.put("message", "Fingerprint captured successfully");
-                response.put("image", captureResult.get("image"));
                 response.put("width", width);
                 response.put("height", height);
                 response.put("quality_score", captureResult.get("quality_score"));
