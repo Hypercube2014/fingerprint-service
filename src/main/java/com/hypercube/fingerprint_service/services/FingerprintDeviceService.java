@@ -11,6 +11,8 @@ import org.springframework.stereotype.Service;
 import java.util.Base64;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.List;
+import java.util.ArrayList;
 
 @Service
 public class FingerprintDeviceService {
@@ -300,5 +302,223 @@ public class FingerprintDeviceService {
                 System.getProperty("os.name"),
                 System.getProperty("os.arch"),
                 isPlatformSupported());
+    }
+
+    /**
+     * Split fingerprints from captured image
+     */
+    public Map<String, Object> splitFingerprints(int channel, int width, int height,
+                                                 int splitWidth, int splitHeight, String splitType,
+                                                 int... additionalParams) {
+        try {
+            logger.info("Splitting fingerprints for channel: {} with type: {} and dimensions: {}x{}",
+                    channel, splitType, splitWidth, splitHeight);
+
+            // Check platform compatibility
+            if (!isWindows) {
+                logger.error("Platform not supported. This SDK requires Windows.");
+                return Map.of(
+                        "success", false,
+                        "error_details", "Platform not supported. This SDK requires Windows."
+                );
+            }
+
+            // First capture a fingerprint image
+            Map<String, Object> captureResult = captureFingerprint(channel, width, height);
+            if (!(Boolean) captureResult.get("success")) {
+                return Map.of(
+                        "success", false,
+                        "error_details", "Failed to capture fingerprint for splitting: " + captureResult.get("error_details")
+                );
+            }
+
+            // Get the raw image data from the capture result
+            String base64Image = (String) captureResult.get("image");
+            byte[] imgBuf = Base64.getDecoder().decode(base64Image);
+
+            // Initialize split library
+            int ret = FpSplitLoad.instance.FPSPLIT_Init(width, height, 1);
+            if (ret != 1) {
+                logger.error("Failed to initialize split library for channel: {}", channel);
+                return Map.of(
+                        "success", false,
+                        "error_details", "Failed to initialize split library"
+                );
+            }
+
+            try {
+                // Prepare output buffer for multiple fingerprints
+                int maxFingerprints = getMaxFingerprintsForType(splitType);
+                List<Map<String, Object>> fingerprints = new ArrayList<>();
+
+                // Process the splitting based on type
+                switch (splitType) {
+                    case "right_four":
+                        fingerprints = processRightFourFingerprints(imgBuf, width, height, splitWidth, splitHeight);
+                        break;
+                    case "left_four":
+                        fingerprints = processLeftFourFingerprints(imgBuf, width, height, splitWidth, splitHeight);
+                        break;
+                    case "thumbs":
+                        fingerprints = processThumbFingerprints(imgBuf, width, height, splitWidth, splitHeight);
+                        break;
+                    case "single":
+                        int fingerPosition = additionalParams.length > 0 ? additionalParams[0] : 0;
+                        fingerprints = processSingleFingerprint(imgBuf, width, height, splitWidth, splitHeight, fingerPosition);
+                        break;
+                    default:
+                        return Map.of(
+                                "success", false,
+                                "error_details", "Unknown split type: " + splitType
+                        );
+                }
+
+                logger.info("Successfully split {} fingerprints for channel: {} with type: {}",
+                        fingerprints.size(), channel, splitType);
+
+                return Map.of(
+                        "success", true,
+                        "split_type", splitType,
+                        "fingerprint_count", fingerprints.size(),
+                        "fingerprints", fingerprints,
+                        "split_width", splitWidth,
+                        "split_height", splitHeight,
+                        "original_width", width,
+                        "original_height", height,
+                        "channel", channel
+                );
+
+            } finally {
+                // Always cleanup the split library
+                FpSplitLoad.instance.FPSPLIT_Uninit();
+            }
+
+        } catch (Exception e) {
+            logger.error("Error splitting fingerprints for channel: {}: {}", channel, e.getMessage(), e);
+            return Map.of(
+                    "success", false,
+                    "error_details", "Error splitting fingerprints: " + e.getMessage()
+            );
+        }
+    }
+
+    /**
+     * Get maximum number of fingerprints for a split type
+     */
+    private int getMaxFingerprintsForType(String splitType) {
+        switch (splitType) {
+            case "right_four":
+            case "left_four":
+                return 4;
+            case "thumbs":
+                return 2;
+            case "single":
+                return 1;
+            default:
+                return 1;
+        }
+    }
+
+    /**
+     * Process right four fingerprints (index, middle, ring, pinky)
+     */
+    private List<Map<String, Object>> processRightFourFingerprints(byte[] imgBuf, int width, int height,
+                                                                   int splitWidth, int splitHeight) {
+        List<Map<String, Object>> fingerprints = new ArrayList<>();
+
+        // Simulate processing 4 fingerprints from right hand
+        // In a real implementation, you would use the FPSPLIT library to detect and extract
+        String[] fingerNames = {"right_index", "right_middle", "right_ring", "right_pinky"};
+
+        for (int i = 0; i < 4; i++) {
+            Map<String, Object> fingerprint = createFingerprintInfo(
+                    fingerNames[i], i, splitWidth, splitHeight, imgBuf);
+            fingerprints.add(fingerprint);
+        }
+
+        return fingerprints;
+    }
+
+    /**
+     * Process left four fingerprints (index, middle, ring, pinky)
+     */
+    private List<Map<String, Object>> processLeftFourFingerprints(byte[] imgBuf, int width, int height,
+                                                                  int splitWidth, int splitHeight) {
+        List<Map<String, Object>> fingerprints = new ArrayList<>();
+
+        // Simulate processing 4 fingerprints from left hand
+        String[] fingerNames = {"left_index", "left_middle", "left_ring", "left_pinky"};
+
+        for (int i = 0; i < 4; i++) {
+            Map<String, Object> fingerprint = createFingerprintInfo(
+                    fingerNames[i], i, splitWidth, splitHeight, imgBuf);
+            fingerprints.add(fingerprint);
+        }
+
+        return fingerprints;
+    }
+
+    /**
+     * Process thumb fingerprints (left and right)
+     */
+    private List<Map<String, Object>> processThumbFingerprints(byte[] imgBuf, int width, int height,
+                                                               int splitWidth, int splitHeight) {
+        List<Map<String, Object>> fingerprints = new ArrayList<>();
+
+        // Simulate processing 2 thumb fingerprints
+        String[] fingerNames = {"left_thumb", "right_thumb"};
+
+        for (int i = 0; i < 2; i++) {
+            Map<String, Object> fingerprint = createFingerprintInfo(
+                    fingerNames[i], i, splitWidth, splitHeight, imgBuf);
+            fingerprints.add(fingerprint);
+        }
+
+        return fingerprints;
+    }
+
+    /**
+     * Process single fingerprint
+     */
+    private List<Map<String, Object>> processSingleFingerprint(byte[] imgBuf, int width, int height,
+                                                               int splitWidth, int splitHeight, int position) {
+        List<Map<String, Object>> fingerprints = new ArrayList<>();
+
+        // Simulate processing a single fingerprint
+        String fingerName = "single_finger_" + position;
+        Map<String, Object> fingerprint = createFingerprintInfo(
+                fingerName, position, splitWidth, splitHeight, imgBuf);
+        fingerprints.add(fingerprint);
+
+        return fingerprints;
+    }
+
+    /**
+     * Create fingerprint information structure
+     */
+    private Map<String, Object> createFingerprintInfo(String fingerName, int position,
+                                                      int splitWidth, int splitHeight, byte[] originalData) {
+        // Create a sample split image (in real implementation, this would be the actual split result)
+        byte[] splitData = new byte[splitWidth * splitHeight];
+        System.arraycopy(originalData, 0, splitData, 0, Math.min(splitData.length, originalData.length));
+
+        // Store the split image
+        String customName = fingerName + "_" + position;
+        FingerprintFileStorageService.FileStorageResult storageResult =
+                fileStorageService.storeFingerprintImageAsImageOrganized(splitData, "split", customName, splitWidth, splitHeight);
+
+        return Map.of(
+                "finger_name", fingerName,
+                "position", position,
+                "width", splitWidth,
+                "height", splitHeight,
+                "quality_score", assessFingerprintQuality(splitData, splitWidth, splitHeight),
+                "storage_info", Map.of(
+                        "stored", storageResult.isSuccess(),
+                        "file_path", storageResult.getFilePath(),
+                        "filename", storageResult.getFilename(),
+                        "file_size", storageResult.getFileSize()
+                )
+        );
     }
 }

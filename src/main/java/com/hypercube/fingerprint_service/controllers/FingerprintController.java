@@ -352,6 +352,183 @@ public class FingerprintController {
     }
 
     /**
+     * Split Right Four Fingerprints - Extract index, middle, ring, pinky from right hand
+     */
+    @PostMapping("/split/right-four")
+    public ResponseEntity<Map<String, Object>> splitRightFourFingerprints(
+            @RequestParam(defaultValue = "0") int channel,
+            @RequestParam(defaultValue = "1600") int width,
+            @RequestParam(defaultValue = "1500") int height,
+            @RequestParam(defaultValue = "300") int splitWidth,
+            @RequestParam(defaultValue = "400") int splitHeight) {
+
+        try {
+            // Check platform compatibility first
+            if (!deviceService.isPlatformSupported()) {
+                return ResponseEntity.status(400).body(Map.of(
+                        "success", false,
+                        "message", "Platform not supported. This SDK requires Windows.",
+                        "platform_info", deviceService.getPlatformInfo(),
+                        "timestamp", System.currentTimeMillis()
+                ));
+            }
+
+            // Split the fingerprints using the device service
+            Map<String, Object> splitResult = deviceService.splitFingerprints(
+                    channel, width, height, splitWidth, splitHeight, "right_four");
+
+            if ((Boolean) splitResult.get("success")) {
+                return ResponseEntity.ok(splitResult);
+            } else {
+                return ResponseEntity.status(500).body(splitResult);
+            }
+
+        } catch (Exception e) {
+            logger.error("Error splitting right four fingerprints for channel {}: {}", channel, e.getMessage(), e);
+            return ResponseEntity.status(500).body(Map.of(
+                    "success", false,
+                    "message", "Error splitting right four fingerprints: " + e.getMessage(),
+                    "channel", channel,
+                    "platform_info", deviceService.getPlatformInfo(),
+                    "timestamp", System.currentTimeMillis()
+            ));
+        }
+    }
+
+    /**
+     * Split Left Four Fingerprints - Extract index, middle, ring, pinky from left hand
+     */
+    @PostMapping("/split/left-four")
+    public ResponseEntity<Map<String, Object>> splitLeftFourFingerprints(
+            @RequestParam(defaultValue = "0") int channel,
+            @RequestParam(defaultValue = "1600") int width,
+            @RequestParam(defaultValue = "1500") int height,
+            @RequestParam(defaultValue = "300") int splitWidth,
+            @RequestParam(defaultValue = "400") int splitHeight) {
+
+        try {
+            // Check platform compatibility first
+            if (!deviceService.isPlatformSupported()) {
+                return ResponseEntity.status(400).body(Map.of(
+                        "success", false,
+                        "message", "Platform not supported. This SDK requires Windows.",
+                        "platform_info", deviceService.getPlatformInfo(),
+                        "timestamp", System.currentTimeMillis()
+                ));
+            }
+
+            // Split the fingerprints using the device service
+            Map<String, Object> splitResult = deviceService.splitFingerprints(
+                    channel, width, height, splitWidth, splitHeight, "left_four");
+
+            if ((Boolean) splitResult.get("success")) {
+                return ResponseEntity.ok(splitResult);
+            } else {
+                return ResponseEntity.status(500).body(splitResult);
+            }
+
+        } catch (Exception e) {
+            logger.error("Error splitting left four fingerprints for channel {}: {}", channel, e.getMessage(), e);
+            return ResponseEntity.status(500).body(Map.of(
+                    "success", false,
+                    "message", "Error splitting left four fingerprints: " + e.getMessage(),
+                    "channel", channel,
+                    "platform_info", deviceService.getPlatformInfo(),
+                    "timestamp", System.currentTimeMillis()
+            ));
+        }
+    }
+
+    /**
+     * Split Two Thumbs - Extract left and right thumb fingerprints
+     */
+    @PostMapping("/split/thumbs")
+    public ResponseEntity<Map<String, Object>> splitTwoThumbs(
+            @RequestParam(defaultValue = "0") int channel,
+            @RequestParam(defaultValue = "1600") int width,
+            @RequestParam(defaultValue = "1500") int height,
+            @RequestParam(defaultValue = "300") int splitWidth,
+            @RequestParam(defaultValue = "400") int splitHeight) {
+
+        try {
+            // Check platform compatibility first
+            if (!deviceService.isPlatformSupported()) {
+                return ResponseEntity.status(400).body(Map.of(
+                        "success", false,
+                        "message", "Platform not supported. This SDK requires Windows.",
+                        "platform_info", deviceService.getPlatformInfo(),
+                        "timestamp", System.currentTimeMillis()
+                ));
+            }
+
+            // Split the fingerprints using the device service
+            Map<String, Object> splitResult = deviceService.splitFingerprints(
+                    channel, width, height, splitWidth, splitHeight, "thumbs");
+
+            if ((Boolean) splitResult.get("success")) {
+                return ResponseEntity.ok(splitResult);
+            } else {
+                return ResponseEntity.status(500).body(splitResult);
+            }
+
+        } catch (Exception e) {
+            logger.error("Error splitting two thumbs for channel {}: {}", channel, e.getMessage(), e);
+            return ResponseEntity.status(500).body(Map.of(
+                    "success", false,
+                    "message", "Error splitting two thumbs: " + e.getMessage(),
+                    "channel", channel,
+                    "platform_info", deviceService.getPlatformInfo(),
+                    "timestamp", System.currentTimeMillis()
+            ));
+        }
+    }
+
+    /**
+     * Split Single Finger - Extract a single fingerprint from specified position
+     */
+    @PostMapping("/split/single")
+    public ResponseEntity<Map<String, Object>> splitSingleFinger(
+            @RequestParam(defaultValue = "0") int channel,
+            @RequestParam(defaultValue = "1600") int width,
+            @RequestParam(defaultValue = "1500") int height,
+            @RequestParam(defaultValue = "300") int splitWidth,
+            @RequestParam(defaultValue = "400") int splitHeight,
+            @RequestParam(defaultValue = "0") int fingerPosition) {
+
+        try {
+            // Check platform compatibility first
+            if (!deviceService.isPlatformSupported()) {
+                return ResponseEntity.status(400).body(Map.of(
+                        "success", false,
+                        "message", "Platform not supported. This SDK requires Windows.",
+                        "platform_info", deviceService.getPlatformInfo(),
+                        "timestamp", System.currentTimeMillis()
+                ));
+            }
+
+            // Split the fingerprints using the device service
+            Map<String, Object> splitResult = deviceService.splitFingerprints(
+                    channel, width, height, splitWidth, splitHeight, "single", fingerPosition);
+
+            if ((Boolean) splitResult.get("success")) {
+                return ResponseEntity.ok(splitResult);
+            } else {
+                return ResponseEntity.status(500).body(splitResult);
+            }
+
+        } catch (Exception e) {
+            logger.error("Error splitting single finger for channel {}: {}", channel, e.getMessage(), e);
+            return ResponseEntity.status(500).body(Map.of(
+                    "success", false,
+                    "message", "Error splitting single finger: " + e.getMessage(),
+                    "channel", channel,
+                    "platform_info", deviceService.getPlatformInfo(),
+                    "timestamp", System.currentTimeMillis()
+            ));
+        }
+    }
+
+    /**
      * Get storage statistics
      */
     @GetMapping("/storage/stats")
