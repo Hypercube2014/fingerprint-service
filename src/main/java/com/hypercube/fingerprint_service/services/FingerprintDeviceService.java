@@ -16,6 +16,7 @@ import java.util.Date;
 import java.util.List;
 import com.sun.jna.Pointer;
 import com.sun.jna.Memory;
+import java.util.HashMap;
 
 @Service
 public class FingerprintDeviceService {
@@ -325,18 +326,66 @@ public class FingerprintDeviceService {
                 );
             }
 
+            // Ensure device is initialized first (following demo app pattern)
+            if (!isDeviceInitialized(channel)) {
+                logger.info("Device not initialized for channel {}, attempting to initialize", channel);
+                boolean initSuccess = initializeDevice(channel);
+                if (!initSuccess) {
+                    return Map.of(
+                            "success", false,
+                            "error_details", "Failed to initialize device for channel: " + channel
+                    );
+                }
+                logger.info("Device initialized successfully for channel: {}", channel);
+            }
+
             // Initialize the FPSPLIT library FIRST (before capture)
             // This allows the library to communicate with hardware and show green indicators
+            logger.info("Initializing FPSPLIT library with dimensions: {}x{}", width, height);
             int ret = FpSplitLoad.instance.FPSPLIT_Init(width, height, 1);
             if (ret != 1) {
                 logger.error("Failed to initialize FPSPLIT library for thumb splitting. Return code: {}", ret);
-                return Map.of(
-                        "success", false,
-                        "error_details", "Failed to initialize FPSPLIT library. Return code: " + ret
-                );
+
+                // Try with smaller dimensions if the original ones fail
+                if (ret == 0) {
+                    logger.info("Return code 0 detected. Trying with smaller dimensions...");
+                    int[][] fallbackDimensions = {{800, 600}, {640, 480}, {400, 300}};
+
+                    for (int[] dims : fallbackDimensions) {
+                        int fallbackWidth = dims[0];
+                        int fallbackHeight = dims[1];
+                        logger.info("Trying FPSPLIT_Init with fallback dimensions: {}x{}", fallbackWidth, fallbackHeight);
+
+                        ret = FpSplitLoad.instance.FPSPLIT_Init(fallbackWidth, fallbackHeight, 1);
+                        if (ret == 1) {
+                            logger.info("FPSPLIT_Init SUCCESS with fallback dimensions: {}x{}", fallbackWidth, fallbackHeight);
+                            // Update dimensions to use the working ones
+                            width = fallbackWidth;
+                            height = fallbackHeight;
+                            break;
+                        } else {
+                            logger.warn("FPSPLIT_Init FAILED with fallback dimensions {}x{}, return code: {}", fallbackWidth, fallbackHeight, ret);
+                        }
+                    }
+
+                    // If still no success, return error
+                    if (ret != 1) {
+                        Map<String, Object> errorResponse = new HashMap<>();
+                        errorResponse.put("success", false);
+                        errorResponse.put("error_details", "Failed to initialize FPSPLIT library with any dimensions. Last return code: " + ret);
+                        errorResponse.put("tried_dimensions", List.of("1600x1500", "800x600", "640x480", "400x300"));
+                        errorResponse.put("note", "FPSPLIT library may require specific hardware or driver setup");
+                        return errorResponse;
+                    }
+                } else {
+                    return Map.of(
+                            "success", false,
+                            "error_details", "Failed to initialize FPSPLIT library. Return code: " + ret
+                    );
+                }
             }
 
-            logger.info("FPSPLIT library initialized successfully. Hardware should now show green thumb indicators.");
+            logger.info("FPSPLIT library initialized successfully with dimensions: {}x{}. Hardware should now show green thumb indicators.", width, height);
 
             try {
                 // Now capture the fingerprint image (after FPSPLIT is initialized)
@@ -397,18 +446,20 @@ public class FingerprintDeviceService {
 
                 logger.info("Successfully split {} thumbs for channel: {}", thumbs.size(), channel);
 
-                return Map.of(
-                        "success", true,
-                        "split_type", "two_thumbs",
-                        "thumb_count", thumbs.size(),
-                        "thumbs", thumbs,
-                        "split_width", splitWidth,
-                        "split_height", splitHeight,
-                        "original_width", width,
-                        "original_height", height,
-                        "channel", channel,
-                        "captured_at", new Date()
-                );
+                Map<String, Object> successResponse = new HashMap<>();
+                successResponse.put("success", true);
+                successResponse.put("split_type", "two_thumbs");
+                successResponse.put("thumb_count", thumbs.size());
+                successResponse.put("thumbs", thumbs);
+                successResponse.put("split_width", splitWidth);
+                successResponse.put("split_height", splitHeight);
+                successResponse.put("original_width", width);
+                successResponse.put("original_height", height);
+                successResponse.put("channel", channel);
+                successResponse.put("captured_at", new Date());
+                successResponse.put("note", "FPSPLIT library initialized successfully with dimensions: " + width + "x" + height);
+
+                return successResponse;
 
             } finally {
                 // Always cleanup the FPSPLIT library
@@ -474,7 +525,7 @@ public class FingerprintDeviceService {
 
     /**
      * Test FPSPLIT library initialization with different dimensions
-     * This helps debug initialization issues
+     * This helps debug FPSPLIT initialization issues
      */
     public Map<String, Object> testFpSplitInitialization() {
         try {
@@ -486,6 +537,22 @@ public class FingerprintDeviceService {
                         "success", false,
                         "error_details", "Platform not supported. This SDK requires Windows."
                 );
+            }
+
+            // Check if device is initialized first (following demo app pattern)
+            boolean deviceInitialized = false;
+            try {
+                // Try to initialize device first (like demo app does)
+                logger.info("Attempting to initialize fingerprint device first...");
+                int deviceRet = ID_FprCapLoad.ID_FprCapinterface.instance.LIVESCAN_Init();
+                if (deviceRet == 1) {
+                    deviceInitialized = true;
+                    logger.info("Device initialized successfully before FPSPLIT test");
+                } else {
+                    logger.warn("Device initialization failed with return code: {}", deviceRet);
+                }
+            } catch (Exception e) {
+                logger.warn("Device initialization attempt failed: {}", e.getMessage());
             }
 
             // Test different dimension combinations
@@ -511,7 +578,9 @@ public class FingerprintDeviceService {
                             "dimensions", width + "x" + height,
                             "success", ret == 1,
                             "return_code", ret,
-                            "message", ret == 1 ? "Success" : "Failed"
+                            "message", ret == 1 ? "Success" :
+                                    ret == 0 ? "Failed (return code 0)" :
+                                            "Failed (return code " + ret + ")"
                     );
 
                     testResults.add(result);
@@ -541,13 +610,25 @@ public class FingerprintDeviceService {
                     .findFirst()
                     .orElse(null);
 
+            // Clean up device if we initialized it
+            if (deviceInitialized) {
+                try {
+                    ID_FprCapLoad.ID_FprCapinterface.instance.LIVESCAN_Close();
+                    logger.info("Device closed after FPSPLIT test");
+                } catch (Exception e) {
+                    logger.warn("Error closing device after test: {}", e.getMessage());
+                }
+            }
+
             return Map.of(
                     "success", true,
+                    "device_initialized_for_test", deviceInitialized,
                     "test_results", testResults,
                     "best_working_dimensions", bestResult != null ? bestResult.get("dimensions") : "None found",
                     "recommendation", bestResult != null ?
                             "Use dimensions: " + bestResult.get("dimensions") :
-                            "Try smaller dimensions like 400x300 or 320x240"
+                            "Try smaller dimensions like 400x300 or 320x240. Also ensure device is initialized first.",
+                    "note", "FPSPLIT requires device initialization first (like demo app pattern)"
             );
 
         } catch (Exception e) {
