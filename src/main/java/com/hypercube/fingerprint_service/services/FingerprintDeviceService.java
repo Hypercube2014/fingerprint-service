@@ -497,19 +497,20 @@ public class FingerprintDeviceService {
                 logger.info("Successfully split {} fingerprints for channel: {} with type: {}",
                         fingerprints.size(), channel, splitType);
 
-                return Map.of(
-                        "success", true,
-                        "split_type", splitType,
-                        "fingerprint_count", fingerprints.size(),
-                        "fingerprints", fingerprints,
-                        "split_width", splitWidth,
-                        "split_height", splitHeight,
-                        "original_width", width,
-                        "original_height", height,
-                        "working_width", workingWidth,
-                        "working_height", workingHeight,
-                        "channel", channel
-                );
+                Map<String, Object> response = new HashMap<>();
+                response.put("success", true);
+                response.put("split_type", splitType);
+                response.put("fingerprint_count", fingerprints.size());
+                response.put("fingerprints", fingerprints);
+                response.put("split_width", splitWidth);
+                response.put("split_height", splitHeight);
+                response.put("original_width", width);
+                response.put("original_height", height);
+                response.put("working_width", workingWidth);
+                response.put("working_height", workingHeight);
+                response.put("channel", channel);
+
+                return response;
 
             } finally {
                 // Always cleanup the split library
@@ -645,18 +646,21 @@ public class FingerprintDeviceService {
         FingerprintFileStorageService.FileStorageResult storageResult =
                 fileStorageService.storeFingerprintImageAsImageOrganized(splitData, "split", customName, splitWidth, splitHeight);
 
-        return Map.of(
-                "finger_name", fingerName,
-                "position", position,
-                "width", splitWidth,
-                "height", splitHeight,
-                "quality_score", assessFingerprintQuality(splitData, splitWidth, splitHeight),
-                "storage_info", Map.of(
-                        "stored", storageResult.isSuccess(),
-                        "file_path", storageResult.getFilePath(),
-                        "filename", storageResult.getFilename(),
-                        "file_size", storageResult.getFileSize()
-                )
-        );
+        Map<String, Object> fingerprintInfo = new HashMap<>();
+        fingerprintInfo.put("finger_name", fingerName);
+        fingerprintInfo.put("position", position);
+        fingerprintInfo.put("width", splitWidth);
+        fingerprintInfo.put("height", splitHeight);
+        fingerprintInfo.put("quality_score", assessFingerprintQuality(splitData, splitWidth, splitHeight));
+
+        Map<String, Object> storageInfo = new HashMap<>();
+        storageInfo.put("stored", storageResult.isSuccess());
+        storageInfo.put("file_path", storageResult.getFilePath());
+        storageInfo.put("filename", storageResult.getFilename());
+        storageInfo.put("file_size", storageResult.getFileSize());
+
+        fingerprintInfo.put("storage_info", storageInfo);
+
+        return fingerprintInfo;
     }
 }
