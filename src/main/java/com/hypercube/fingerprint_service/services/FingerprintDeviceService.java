@@ -11,9 +11,11 @@ import org.springframework.stereotype.Service;
 import java.util.Base64;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.List;
 import java.util.ArrayList;
-import java.util.HashMap;
+import java.util.Date;
+import java.util.List;
+import com.sun.jna.Pointer;
+import com.sun.jna.Memory;
 
 @Service
 public class FingerprintDeviceService {
@@ -306,14 +308,13 @@ public class FingerprintDeviceService {
     }
 
     /**
-     * Split fingerprints from captured image
+     * Split two thumbs from a single captured image
+     * This method captures an image and automatically splits it into left and right thumb images
      */
-    public Map<String, Object> splitFingerprints(int channel, int width, int height,
-                                                 int splitWidth, int splitHeight, String splitType,
-                                                 int... additionalParams) {
+    public Map<String, Object> splitTwoThumbs(int channel, int width, int height, int splitWidth, int splitHeight) {
         try {
-            logger.info("Splitting fingerprints for channel: {} with type: {} and dimensions: {}x{}",
-                    channel, splitType, splitWidth, splitHeight);
+            logger.info("Splitting two thumbs for channel: {} with dimensions: {}x{} -> {}x{}",
+                    channel, width, height, splitWidth, splitHeight);
 
             // Check platform compatibility
             if (!isWindows) {
@@ -324,386 +325,144 @@ public class FingerprintDeviceService {
                 );
             }
 
-            // Check if device is initialized
-            if (!isDeviceInitialized(channel)) {
-                logger.info("Device not initialized for channel {}, attempting to initialize", channel);
-                boolean initSuccess = initializeDevice(channel);
-                if (!initSuccess) {
-                    return Map.of(
-                            "success", false,
-                            "error_details", "Device not initialized and initialization failed"
-                    );
-                }
-            }
-
-            // Capture fingerprint image directly for splitting (without storing as standard image)
-            byte[] imgBuf = captureFingerprintRawData(channel, width, height);
-            if (imgBuf == null) {
+            // First capture the fingerprint image
+            Map<String, Object> captureResult = captureFingerprint(channel, width, height);
+            if (!(Boolean) captureResult.get("success")) {
                 return Map.of(
                         "success", false,
-                        "error_details", "Failed to capture fingerprint data for splitting"
+                        "error_details", "Failed to capture fingerprint for splitting: " + captureResult.get("error_details")
                 );
             }
 
-            // Try to initialize split library with different dimension combinations
-            int ret = -1;
-            int workingWidth = width;
-            int workingHeight = height;
+            // Get the raw image data from the capture result
+            String base64Image = (String) captureResult.get("image");
+            byte[] rawData = Base64.getDecoder().decode(base64Image);
 
-            // Try original dimensions first
-            logger.info("Attempting to initialize FPSPLIT library with dimensions: {}x{}", width, height);
-            ret = FpSplitLoad.instance.FPSPLIT_Init(width, height, 1);
-
+            // Initialize the FPSPLIT library
+            int ret = FpSplitLoad.instance.FPSPLIT_Init(width, height, 1);
             if (ret != 1) {
-                logger.warn("FPSPLIT_Init failed with dimensions {}x{}, return code: {}. Trying smaller dimensions...", width, height, ret);
-
-                // Try with smaller dimensions that might be more compatible
-                int[][] testDimensions = {
-                        {800, 600},   // Standard VGA
-                        {640, 480},   // VGA
-                        {400, 300},   // Common fingerprint size
-                        {300, 400},   // Portrait orientation
-                        {200, 150}    // Very small test
-                };
-
-                boolean initSuccess = false;
-                for (int[] dims : testDimensions) {
-                    int testWidth = dims[0];
-                    int testHeight = dims[1];
-
-                    logger.info("Trying FPSPLIT_Init with dimensions: {}x{}", testWidth, testHeight);
-                    ret = FpSplitLoad.instance.FPSPLIT_Init(testWidth, testHeight, 1);
-
-                    if (ret == 1) {
-                        logger.info("FPSPLIT_Init successful with dimensions: {}x{}", testWidth, testHeight);
-                        workingWidth = testWidth;
-                        workingHeight = testHeight;
-                        initSuccess = true;
-                        break;
-                    } else {
-                        logger.warn("FPSPLIT_Init failed with dimensions {}x{}, return code: {}", testWidth, testHeight, ret);
-                    }
-                }
-
-                if (!initSuccess) {
-                    logger.error("All FPSPLIT_Init attempts failed for channel: {}. Final return code: {}", channel, ret);
-                    return Map.of(
-                            "success", false,
-                            "error_details", "Failed to initialize split library after trying multiple dimensions. Final return code: " + ret
-                    );
-                }
-            } else {
-                logger.info("FPSPLIT_Init successful with original dimensions: {}x{}", width, height);
+                logger.error("Failed to initialize FPSPLIT library for thumb splitting");
+                return Map.of(
+                        "success", false,
+                        "error_details", "Failed to initialize FPSPLIT library"
+                );
             }
 
             try {
-                // Prepare output buffer for multiple fingerprints
-                int maxFingerprints = getMaxFingerprintsForType(splitType);
-                List<Map<String, Object>> fingerprints = new ArrayList<>();
+                // Prepare output buffer for split results
+                // We expect 2 thumbs, so we'll prepare space for them
+                int size = 28; // Size of FPSPLIT_INFO structure
+                Pointer infosPtr = new Memory(size * 2); // Space for 2 thumbs
 
-                // Process the splitting based on type
-                switch (splitType) {
-                    case "right_four":
-                        fingerprints = processRightFourFingerprints(imgBuf, workingWidth, workingHeight, splitWidth, splitHeight);
-                        break;
-                    case "left_four":
-                        fingerprints = processLeftFourFingerprints(imgBuf, workingWidth, workingHeight, splitWidth, splitHeight);
-                        break;
-                    case "thumbs":
-                        fingerprints = processThumbFingerprints(imgBuf, workingWidth, workingHeight, splitWidth, splitHeight);
-                        break;
-                    case "single":
-                        int fingerPosition = additionalParams.length > 0 ? additionalParams[0] : 0;
-                        fingerprints = processSingleFingerprint(imgBuf, workingWidth, workingHeight, splitWidth, splitHeight, fingerPosition);
-                        break;
-                    default:
-                        return Map.of(
-                                "success", false,
-                                "error_details", "Unknown split type: " + splitType
-                        );
+                // Prepare memory for each thumb's output buffer
+                for (int i = 0; i < 2; i++) {
+                    Pointer ptr = infosPtr.share(i * size + 24);
+                    Pointer p = new Memory(splitWidth * splitHeight);
+                    ptr.setPointer(0, p);
                 }
 
-                logger.info("Successfully split {} fingerprints for channel: {} with type: {}",
-                        fingerprints.size(), channel, splitType);
+                // Perform the splitting
+                int fpNum = 0;
+                ret = FpSplitLoad.instance.FPSPLIT_DoSplit(
+                        rawData, width, height, 1, splitWidth, splitHeight, fpNum, infosPtr
+                );
 
-                Map<String, Object> response = new HashMap<>();
-                response.put("success", true);
-                response.put("split_type", splitType);
-                response.put("fingerprint_count", fingerprints.size());
-                response.put("fingerprints", fingerprints);
-                response.put("split_width", splitWidth);
-                response.put("split_height", splitHeight);
-                response.put("original_width", width);
-                response.put("original_height", height);
-                response.put("working_width", workingWidth);
-                response.put("working_height", workingHeight);
-                response.put("channel", channel);
+                if (ret != 1) {
+                    logger.error("Failed to split thumbs with FPSPLIT library");
+                    return Map.of(
+                            "success", false,
+                            "error_details", "Failed to split thumbs with FPSPLIT library"
+                    );
+                }
 
-                return response;
+                // Process the split results and store individual thumb images
+                List<Map<String, Object>> thumbs = new ArrayList<>();
+
+                // Extract left thumb (position 0)
+                Map<String, Object> leftThumb = processSplitThumb(infosPtr, 0, "left_thumb", splitWidth, splitHeight);
+                if (leftThumb != null) {
+                    thumbs.add(leftThumb);
+                }
+
+                // Extract right thumb (position 1)
+                Map<String, Object> rightThumb = processSplitThumb(infosPtr, 1, "right_thumb", splitWidth, splitHeight);
+                if (rightThumb != null) {
+                    thumbs.add(rightThumb);
+                }
+
+                logger.info("Successfully split {} thumbs for channel: {}", thumbs.size(), channel);
+
+                return Map.of(
+                        "success", true,
+                        "split_type", "two_thumbs",
+                        "thumb_count", thumbs.size(),
+                        "thumbs", thumbs,
+                        "split_width", splitWidth,
+                        "split_height", splitHeight,
+                        "original_width", width,
+                        "original_height", height,
+                        "channel", channel,
+                        "captured_at", new Date()
+                );
 
             } finally {
-                // Always cleanup the split library
+                // Always cleanup the FPSPLIT library
                 FpSplitLoad.instance.FPSPLIT_Uninit();
             }
 
-        } catch (Exception e) {
-            logger.error("Error splitting fingerprints for channel: {}: {}", channel, e.getMessage(), e);
+        } catch (UnsatisfiedLinkError e) {
+            logger.error("Native library cannot be loaded. This is likely because you're running on Linux but the SDK requires Windows DLLs. Error: {}", e.getMessage());
             return Map.of(
                     "success", false,
-                    "error_details", "Error splitting fingerprints: " + e.getMessage()
+                    "error_details", "Native library cannot be loaded. This SDK requires Windows."
+            );
+        } catch (Exception e) {
+            logger.error("Error splitting two thumbs for channel: {}: {}", channel, e.getMessage(), e);
+            return Map.of(
+                    "success", false,
+                    "error_details", "Error splitting two thumbs: " + e.getMessage()
             );
         }
     }
 
     /**
-     * Capture fingerprint raw data without storing as standard image (for internal use)
+     * Process a split thumb result and store it as an image
      */
-    private byte[] captureFingerprintRawData(int channel, int width, int height) {
+    private Map<String, Object> processSplitThumb(Pointer infosPtr, int position, String thumbName, int splitWidth, int splitHeight) {
         try {
-            logger.info("Capturing fingerprint raw data for channel: {} with dimensions: {}x{}", channel, width, height);
+            // Extract the thumb data from the pointer
+            Pointer thumbPtr = infosPtr.share(position * 28 + 24);
+            byte[] thumbData = thumbPtr.getByteArray(0, splitWidth * splitHeight);
 
-            // Begin capture
-            int ret = ID_FprCapLoad.ID_FprCapinterface.instance.LIVESCAN_BeginCapture(channel);
-            if (ret != 1) {
-                logger.error("Failed to begin capture for channel: {} with error code: {}", channel, ret);
+            // Store the thumb as a PNG image
+            String customName = String.format("%s_position_%d", thumbName, position);
+            FingerprintFileStorageService.FileStorageResult storageResult =
+                    fileStorageService.storeFingerprintImageAsImageOrganized(thumbData, "split", customName, splitWidth, splitHeight);
+
+            if (storageResult.isSuccess()) {
+                logger.info("Thumb {} stored successfully: {}", thumbName, storageResult.getFilePath());
+
+                return Map.of(
+                        "thumb_name", thumbName,
+                        "position", position,
+                        "width", splitWidth,
+                        "height", splitHeight,
+                        "quality_score", 75, // Default quality score for split images
+                        "storage_info", Map.of(
+                                "stored", storageResult.isSuccess(),
+                                "file_path", storageResult.getFilePath(),
+                                "filename", storageResult.getFilename(),
+                                "file_size", storageResult.getFileSize()
+                        )
+                );
+            } else {
+                logger.warn("Failed to store thumb {}: {}", thumbName, storageResult.getMessage());
                 return null;
             }
-
-            // Get fingerprint data
-            byte[] rawData = new byte[width * height];
-            ret = ID_FprCapLoad.ID_FprCapinterface.instance.LIVESCAN_GetFPRawData(channel, rawData);
-
-            if (ret != 1) {
-                ID_FprCapLoad.ID_FprCapinterface.instance.LIVESCAN_EndCapture(channel);
-                logger.error("Failed to capture fingerprint data for channel: {} with error code: {}", channel, ret);
-                return null;
-            }
-
-            // End capture
-            ID_FprCapLoad.ID_FprCapinterface.instance.LIVESCAN_EndCapture(channel);
-
-            logger.info("Successfully captured raw fingerprint data for channel: {} with size: {}", channel, rawData.length);
-            return rawData;
 
         } catch (Exception e) {
-            logger.error("Error capturing raw fingerprint data for channel: {}: {}", channel, e.getMessage(), e);
+            logger.error("Error processing thumb {}: {}", thumbName, e.getMessage());
             return null;
         }
-    }
-
-    /**
-     * Get maximum number of fingerprints for a split type
-     */
-    private int getMaxFingerprintsForType(String splitType) {
-        switch (splitType) {
-            case "right_four":
-            case "left_four":
-                return 4;
-            case "thumbs":
-                return 2;
-            case "single":
-                return 1;
-            default:
-                return 1;
-        }
-    }
-
-    /**
-     * Process right four fingerprints (index, middle, ring, pinky)
-     */
-    private List<Map<String, Object>> processRightFourFingerprints(byte[] imgBuf, int workingWidth, int workingHeight,
-                                                                   int splitWidth, int splitHeight) {
-        List<Map<String, Object>> fingerprints = new ArrayList<>();
-
-        // Simulate processing 4 fingerprints from right hand
-        // In a real implementation, you would use the FPSPLIT library to detect and extract
-        String[] fingerNames = {"right_index", "right_middle", "right_ring", "right_pinky"};
-
-        for (int i = 0; i < 4; i++) {
-            Map<String, Object> fingerprint = createFingerprintInfo(
-                    fingerNames[i], i, splitWidth, splitHeight, imgBuf, workingWidth, workingHeight);
-            fingerprints.add(fingerprint);
-        }
-
-        return fingerprints;
-    }
-
-    /**
-     * Process left four fingerprints (index, middle, ring, pinky)
-     */
-    private List<Map<String, Object>> processLeftFourFingerprints(byte[] imgBuf, int workingWidth, int workingHeight,
-                                                                  int splitWidth, int splitHeight) {
-        List<Map<String, Object>> fingerprints = new ArrayList<>();
-
-        // Simulate processing 4 fingerprints from left hand
-        String[] fingerNames = {"left_index", "left_middle", "left_ring", "left_pinky"};
-
-        for (int i = 0; i < 4; i++) {
-            Map<String, Object> fingerprint = createFingerprintInfo(
-                    fingerNames[i], i, splitWidth, splitHeight, imgBuf, workingWidth, workingHeight);
-            fingerprints.add(fingerprint);
-        }
-
-        return fingerprints;
-    }
-
-    /**
-     * Process thumb fingerprints (left and right)
-     */
-    private List<Map<String, Object>> processThumbFingerprints(byte[] imgBuf, int workingWidth, int workingHeight,
-                                                               int splitWidth, int splitHeight) {
-        List<Map<String, Object>> fingerprints = new ArrayList<>();
-
-        // Simulate processing 2 thumb fingerprints
-        String[] fingerNames = {"left_thumb", "right_thumb"};
-
-        for (int i = 0; i < 2; i++) {
-            Map<String, Object> fingerprint = createFingerprintInfo(
-                    fingerNames[i], i, splitWidth, splitHeight, imgBuf, workingWidth, workingHeight);
-            fingerprints.add(fingerprint);
-        }
-
-        return fingerprints;
-    }
-
-    /**
-     * Process single fingerprint
-     */
-    private List<Map<String, Object>> processSingleFingerprint(byte[] imgBuf, int workingWidth, int workingHeight,
-                                                               int splitWidth, int splitHeight, int position) {
-        List<Map<String, Object>> fingerprints = new ArrayList<>();
-
-        // Simulate processing a single fingerprint
-        String fingerName = "single_finger_" + position;
-        Map<String, Object> fingerprint = createFingerprintInfo(
-                fingerName, position, splitWidth, splitHeight, imgBuf, workingWidth, workingHeight);
-        fingerprints.add(fingerprint);
-
-        return fingerprints;
-    }
-
-    /**
-     * Create fingerprint information structure
-     */
-    private Map<String, Object> createFingerprintInfo(String fingerName, int position,
-                                                      int splitWidth, int splitHeight, byte[] originalData,
-                                                      int workingWidth, int workingHeight) {
-        // Create a sample split image (in real implementation, this would be the actual split result)
-        // If working dimensions differ from original, we need to handle the data appropriately
-        byte[] splitData = new byte[splitWidth * splitHeight];
-
-        if (workingWidth * workingHeight == originalData.length) {
-            // Working dimensions match original data size
-            System.arraycopy(originalData, 0, splitData, 0, Math.min(splitData.length, originalData.length));
-        } else {
-            // Working dimensions are different, create a sample pattern
-            logger.info("Working dimensions {}x{} differ from original data size {}. Creating sample split data.",
-                    workingWidth, workingHeight, originalData.length);
-
-            // Create a simple pattern for demonstration
-            for (int i = 0; i < splitData.length; i++) {
-                splitData[i] = (byte) ((i % 256) & 0xFF);
-            }
-        }
-
-        // Store the split image
-        String customName = fingerName + "_" + position;
-        FingerprintFileStorageService.FileStorageResult storageResult =
-                fileStorageService.storeFingerprintImageAsImageOrganized(splitData, "split", customName, splitWidth, splitHeight);
-
-        Map<String, Object> fingerprintInfo = new HashMap<>();
-        fingerprintInfo.put("finger_name", fingerName);
-        fingerprintInfo.put("position", position);
-        fingerprintInfo.put("width", splitWidth);
-        fingerprintInfo.put("height", splitHeight);
-        fingerprintInfo.put("quality_score", assessFingerprintQuality(splitData, splitWidth, splitHeight));
-
-        Map<String, Object> storageInfo = new HashMap<>();
-        storageInfo.put("stored", storageResult.isSuccess());
-        storageInfo.put("file_path", storageResult.getFilePath());
-        storageInfo.put("filename", storageResult.getFilename());
-        storageInfo.put("file_size", storageResult.getFileSize());
-
-        fingerprintInfo.put("storage_info", storageInfo);
-
-        return fingerprintInfo;
-    }
-
-    /**
-     * Test FPSPLIT library initialization with different dimensions
-     */
-    public Map<String, Object> testFpSplitInitialization() {
-        Map<String, Object> results = new HashMap<>();
-        List<Map<String, Object>> dimensionTests = new ArrayList<>();
-
-        try {
-            // Test different dimension combinations
-            int[][] testDimensions = {
-                    {1600, 1500},  // Original dimensions
-                    {800, 600},     // VGA
-                    {640, 480},     // Standard VGA
-                    {400, 300},     // Common fingerprint size
-                    {300, 400},     // Portrait orientation
-                    {200, 150},     // Very small
-                    {1024, 768},    // XGA
-                    {1280, 720},    // HD
-                    {1920, 1080}    // Full HD
-            };
-
-            for (int[] dims : testDimensions) {
-                int width = dims[0];
-                int height = dims[1];
-
-                Map<String, Object> testResult = new HashMap<>();
-                testResult.put("width", width);
-                testResult.put("height", height);
-                testResult.put("dimensions", width + "x" + height);
-
-                try {
-                    logger.info("Testing FPSPLIT_Init with dimensions: {}x{}", width, height);
-                    int ret = FpSplitLoad.instance.FPSPLIT_Init(width, height, 1);
-
-                    testResult.put("return_code", ret);
-                    testResult.put("success", ret == 1);
-                    testResult.put("status", ret == 1 ? "SUCCESS" : "FAILED");
-
-                    if (ret == 1) {
-                        logger.info("FPSPLIT_Init successful with dimensions: {}x{}", width, height);
-                        // Clean up after successful test
-                        FpSplitLoad.instance.FPSPLIT_Uninit();
-                    } else {
-                        logger.warn("FPSPLIT_Init failed with dimensions {}x{}, return code: {}", width, height, ret);
-                    }
-
-                } catch (Exception e) {
-                    testResult.put("return_code", -1);
-                    testResult.put("success", false);
-                    testResult.put("status", "ERROR");
-                    testResult.put("error", e.getMessage());
-                    logger.error("Exception testing FPSPLIT_Init with dimensions {}x{}: {}", width, height, e.getMessage());
-                }
-
-                dimensionTests.add(testResult);
-            }
-
-            results.put("dimension_tests", dimensionTests);
-            results.put("success", true);
-            results.put("total_tests", dimensionTests.size());
-
-            // Find working dimensions
-            List<Map<String, Object>> workingDimensions = dimensionTests.stream()
-                    .filter(test -> (Boolean) test.get("success"))
-                    .toList();
-
-            results.put("working_dimensions", workingDimensions);
-            results.put("working_count", workingDimensions.size());
-
-        } catch (Exception e) {
-            logger.error("Error testing FPSPLIT initialization: {}", e.getMessage());
-            results.put("success", false);
-            results.put("error", e.getMessage());
-        }
-
-        return results;
     }
 }
