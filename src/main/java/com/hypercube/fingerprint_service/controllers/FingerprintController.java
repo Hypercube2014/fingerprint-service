@@ -271,6 +271,88 @@ public class FingerprintController {
     }
 
     /**
+     * Test image storage with different formats
+     */
+    @PostMapping("/storage/test")
+    public ResponseEntity<Map<String, Object>> testImageStorage(
+            @RequestParam(defaultValue = "0") int channel,
+            @RequestParam(defaultValue = "1600") int width,
+            @RequestParam(defaultValue = "1500") int height,
+            @RequestParam(defaultValue = "PNG") String format) {
+
+        try {
+            // Check platform compatibility first
+            if (!deviceService.isPlatformSupported()) {
+                return ResponseEntity.status(400).body(Map.of(
+                        "success", false,
+                        "message", "Platform not supported. This SDK requires Windows.",
+                        "platform_info", deviceService.getPlatformInfo(),
+                        "timestamp", System.currentTimeMillis()
+                ));
+            }
+
+            // Check if device is initialized
+            if (!deviceService.isDeviceInitialized(channel)) {
+                logger.info("Device not initialized for channel {}, attempting to initialize", channel);
+                boolean initSuccess = deviceService.initializeDevice(channel);
+                if (!initSuccess) {
+                    return ResponseEntity.status(500).body(Map.of(
+                            "success", false,
+                            "message", "Device not initialized and initialization failed",
+                            "channel", channel,
+                            "platform_info", deviceService.getPlatformInfo(),
+                            "timestamp", System.currentTimeMillis()
+                    ));
+                }
+            }
+
+            // Capture the fingerprint image
+            Map<String, Object> captureResult = deviceService.captureFingerprint(channel, width, height);
+
+            if ((Boolean) captureResult.get("success")) {
+                Map<String, Object> response = new HashMap<>();
+                response.put("success", true);
+                response.put("message", "Fingerprint captured and stored as " + format + " successfully");
+                response.put("image_format", format);
+                response.put("width", width);
+                response.put("height", height);
+                response.put("quality_score", captureResult.get("quality_score"));
+                response.put("channel", channel);
+                response.put("captured_at", new Date());
+                response.put("storage_info", Map.of(
+                        "stored", captureResult.get("storage_success"),
+                        "file_path", captureResult.get("file_path"),
+                        "filename", captureResult.get("filename"),
+                        "file_size", captureResult.get("file_size")
+                ));
+                response.put("platform_info", deviceService.getPlatformInfo());
+                response.put("timestamp", System.currentTimeMillis());
+
+                return ResponseEntity.ok(response);
+            } else {
+                return ResponseEntity.status(500).body(Map.of(
+                        "success", false,
+                        "message", "Failed to capture fingerprint",
+                        "error_details", captureResult.get("error_details"),
+                        "channel", channel,
+                        "platform_info", deviceService.getPlatformInfo(),
+                        "timestamp", System.currentTimeMillis()
+                ));
+            }
+
+        } catch (Exception e) {
+            logger.error("Error testing image storage for channel {}: {}", channel, e.getMessage(), e);
+            return ResponseEntity.status(500).body(Map.of(
+                    "success", false,
+                    "message", "Error testing image storage: " + e.getMessage(),
+                    "channel", channel,
+                    "platform_info", deviceService.getPlatformInfo(),
+                    "timestamp", System.currentTimeMillis()
+            ));
+        }
+    }
+
+    /**
      * Get storage statistics
      */
     @GetMapping("/storage/stats")

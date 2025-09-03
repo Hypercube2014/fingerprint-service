@@ -112,16 +112,16 @@ public class FingerprintDeviceService {
             // Assess quality
             int quality = assessFingerprintQuality(rawData, width, height);
 
-            // Store the image automatically
+            // Store the image automatically as normal image file
             String customName = String.format("channel_%d_%dx%d", channel, width, height);
             FingerprintFileStorageService.FileStorageResult storageResult =
-                    fileStorageService.storeFingerprintImageOrganized(rawData, "standard", customName);
+                    fileStorageService.storeFingerprintImageAsImageOrganized(rawData, "standard", customName, width, height);
 
             if (storageResult.isSuccess()) {
-                logger.info("Fingerprint captured and stored successfully for channel: {} with quality: {}. File: {}",
+                logger.info("Fingerprint captured and stored as image successfully for channel: {} with quality: {}. File: {}",
                         channel, quality, storageResult.getFilePath());
             } else {
-                logger.warn("Fingerprint captured but storage failed for channel: {}. Error: {}",
+                logger.warn("Fingerprint captured but image storage failed for channel: {}. Error: {}",
                         channel, storageResult.getMessage());
             }
 
