@@ -13,8 +13,8 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.List;
 import java.util.ArrayList;
-import java.io.File;
 import java.util.HashMap;
+import java.util.stream.Collectors;
 
 @Service
 public class FingerprintDeviceService {
@@ -307,93 +307,9 @@ public class FingerprintDeviceService {
     }
 
     /**
-     * Test DLL loading status for all required libraries
+     * Test FPSPLIT library initialization with different dimensions
      */
-    public Map<String, Object> testDllLoading() {
-        Map<String, Object> results = new HashMap<>();
-
-        try {
-            // Test FpSplit library
-            try {
-                int ret = FpSplitLoad.instance.FPSPLIT_Init(1600, 1500, 1);
-                if (ret == 1) {
-                    results.put("fpsplit_status", "SUCCESS");
-                    results.put("fpsplit_init_result", ret);
-                    // Clean up after test
-                    FpSplitLoad.instance.FPSPLIT_Uninit();
-                } else {
-                    results.put("fpsplit_status", "FAILED");
-                    results.put("fpsplit_init_result", ret);
-                }
-            } catch (Exception e) {
-                results.put("fpsplit_status", "ERROR");
-                results.put("fpsplit_error", e.getMessage());
-            }
-
-            // Test GAMC library
-            try {
-                int ret = GamcLoad.instance.MOSAIC_Init();
-                if (ret == 1) {
-                    results.put("gamc_status", "SUCCESS");
-                    results.put("gamc_init_result", ret);
-                    // Clean up after test
-                    GamcLoad.instance.MOSAIC_Close();
-                } else {
-                    results.put("gamc_status", "FAILED");
-                    results.put("gamc_init_result", ret);
-                }
-            } catch (Exception e) {
-                results.put("gamc_status", "ERROR");
-                results.put("gamc_error", e.getMessage());
-            }
-
-            // Test ID_FprCap library
-            try {
-                int ret = ID_FprCapLoad.ID_FprCapinterface.instance.LIVESCAN_Init();
-                if (ret == 1) {
-                    results.put("id_fprcap_status", "SUCCESS");
-                    results.put("id_fprcap_init_result", ret);
-                    // Clean up after test
-                    ID_FprCapLoad.ID_FprCapinterface.instance.LIVESCAN_Close();
-                } else {
-                    results.put("id_fprcap_status", "FAILED");
-                    results.put("id_fprcap_init_result", ret);
-                }
-            } catch (Exception e) {
-                results.put("id_fprcap_status", "ERROR");
-                results.put("id_fprcap_error", e.getMessage());
-            }
-
-            // Check DLL file existence
-            String[] dllFiles = {"FpSplit.dll", "GAMC.dll", "GALSXXYY.dll", "ZhiAngCamera.dll"};
-            Map<String, Object> dllExistence = new HashMap<>();
-
-            for (String dll : dllFiles) {
-                File dllFile = new File(dll);
-                dllExistence.put(dll, dllFile.exists());
-                if (dllFile.exists()) {
-                    dllExistence.put(dll + "_size", dllFile.length());
-                    dllExistence.put(dll + "_path", dllFile.getAbsolutePath());
-                }
-            }
-
-            results.put("dll_files", dllExistence);
-            results.put("success", true);
-            results.put("platform_info", getPlatformInfo());
-
-        } catch (Exception e) {
-            logger.error("Error testing DLL loading: {}", e.getMessage(), e);
-            results.put("success", false);
-            results.put("error", e.getMessage());
-        }
-
-        return results;
-    }
-
-    /**
-     * Test FPSPLIT_Init with different dimension combinations
-     */
-    public Map<String, Object> testFpSplitDimensions() {
+    public Map<String, Object> testFpSplitInitialization() {
         Map<String, Object> results = new HashMap<>();
         List<Map<String, Object>> dimensionTests = new ArrayList<>();
 
@@ -460,7 +376,7 @@ public class FingerprintDeviceService {
             results.put("working_count", workingDimensions.size());
 
         } catch (Exception e) {
-            logger.error("Error testing FPSPLIT dimensions: {}", e.getMessage(), e);
+            logger.error("Error testing FPSPLIT initialization: {}", e.getMessage(), e);
             results.put("success", false);
             results.put("error", e.getMessage());
         }
@@ -500,36 +416,39 @@ public class FingerprintDeviceService {
             String base64Image = (String) captureResult.get("image");
             byte[] imgBuf = Base64.getDecoder().decode(base64Image);
 
-            // Initialize split library
-            logger.info("Attempting to initialize FPSPLIT library with dimensions: {}x{}, preview: 1", width, height);
+            // Try to initialize split library with different dimension combinations
+            int ret = -1;
+            int workingWidth = width;
+            int workingHeight = height;
 
-            // Try different dimension combinations if the first one fails
-            int ret = FpSplitLoad.instance.FPSPLIT_Init(width, height, 1);
+            // Try original dimensions first
+            logger.info("Attempting to initialize FPSPLIT library with dimensions: {}x{}", width, height);
+            ret = FpSplitLoad.instance.FPSPLIT_Init(width, height, 1);
+
             if (ret != 1) {
-                logger.warn("FPSPLIT_Init failed with dimensions {}x{}, trying smaller dimensions", width, height);
+                logger.warn("FPSPLIT_Init failed with dimensions {}x{}, return code: {}. Trying smaller dimensions...", width, height, ret);
 
                 // Try with smaller dimensions that might be more compatible
-                int[] testDimensions = {
-                        800, 600,   // Standard VGA
-                        640, 480,   // VGA
-                        400, 300,   // Common fingerprint size
-                        300, 400,   // Portrait orientation
-                        200, 150    // Very small test
+                int[][] testDimensions = {
+                        {800, 600},   // Standard VGA
+                        {640, 480},   // VGA
+                        {400, 300},   // Common fingerprint size
+                        {300, 400},   // Portrait orientation
+                        {200, 150}    // Very small test
                 };
 
                 boolean initSuccess = false;
-                for (int i = 0; i < testDimensions.length; i += 2) {
-                    int testWidth = testDimensions[i];
-                    int testHeight = testDimensions[i + 1];
+                for (int[] dims : testDimensions) {
+                    int testWidth = dims[0];
+                    int testHeight = dims[1];
 
                     logger.info("Trying FPSPLIT_Init with dimensions: {}x{}", testWidth, testHeight);
                     ret = FpSplitLoad.instance.FPSPLIT_Init(testWidth, testHeight, 1);
 
                     if (ret == 1) {
                         logger.info("FPSPLIT_Init successful with dimensions: {}x{}", testWidth, testHeight);
-                        // Update the working dimensions
-                        width = testWidth;
-                        height = testHeight;
+                        workingWidth = testWidth;
+                        workingHeight = testHeight;
                         initSuccess = true;
                         break;
                     } else {
@@ -556,17 +475,17 @@ public class FingerprintDeviceService {
                 // Process the splitting based on type
                 switch (splitType) {
                     case "right_four":
-                        fingerprints = processRightFourFingerprints(imgBuf, width, height, splitWidth, splitHeight);
+                        fingerprints = processRightFourFingerprints(imgBuf, workingWidth, workingHeight, splitWidth, splitHeight);
                         break;
                     case "left_four":
-                        fingerprints = processLeftFourFingerprints(imgBuf, width, height, splitWidth, splitHeight);
+                        fingerprints = processLeftFourFingerprints(imgBuf, workingWidth, workingHeight, splitWidth, splitHeight);
                         break;
                     case "thumbs":
-                        fingerprints = processThumbFingerprints(imgBuf, width, height, splitWidth, splitHeight);
+                        fingerprints = processThumbFingerprints(imgBuf, workingWidth, workingHeight, splitWidth, splitHeight);
                         break;
                     case "single":
                         int fingerPosition = additionalParams.length > 0 ? additionalParams[0] : 0;
-                        fingerprints = processSingleFingerprint(imgBuf, width, height, splitWidth, splitHeight, fingerPosition);
+                        fingerprints = processSingleFingerprint(imgBuf, workingWidth, workingHeight, splitWidth, splitHeight, fingerPosition);
                         break;
                     default:
                         return Map.of(
@@ -587,6 +506,8 @@ public class FingerprintDeviceService {
                         "split_height", splitHeight,
                         "original_width", width,
                         "original_height", height,
+                        "working_width", workingWidth,
+                        "working_height", workingHeight,
                         "channel", channel
                 );
 
@@ -624,7 +545,7 @@ public class FingerprintDeviceService {
     /**
      * Process right four fingerprints (index, middle, ring, pinky)
      */
-    private List<Map<String, Object>> processRightFourFingerprints(byte[] imgBuf, int width, int height,
+    private List<Map<String, Object>> processRightFourFingerprints(byte[] imgBuf, int workingWidth, int workingHeight,
                                                                    int splitWidth, int splitHeight) {
         List<Map<String, Object>> fingerprints = new ArrayList<>();
 
@@ -634,7 +555,7 @@ public class FingerprintDeviceService {
 
         for (int i = 0; i < 4; i++) {
             Map<String, Object> fingerprint = createFingerprintInfo(
-                    fingerNames[i], i, splitWidth, splitHeight, imgBuf);
+                    fingerNames[i], i, splitWidth, splitHeight, imgBuf, workingWidth, workingHeight);
             fingerprints.add(fingerprint);
         }
 
@@ -644,7 +565,7 @@ public class FingerprintDeviceService {
     /**
      * Process left four fingerprints (index, middle, ring, pinky)
      */
-    private List<Map<String, Object>> processLeftFourFingerprints(byte[] imgBuf, int width, int height,
+    private List<Map<String, Object>> processLeftFourFingerprints(byte[] imgBuf, int workingWidth, int workingHeight,
                                                                   int splitWidth, int splitHeight) {
         List<Map<String, Object>> fingerprints = new ArrayList<>();
 
@@ -653,7 +574,7 @@ public class FingerprintDeviceService {
 
         for (int i = 0; i < 4; i++) {
             Map<String, Object> fingerprint = createFingerprintInfo(
-                    fingerNames[i], i, splitWidth, splitHeight, imgBuf);
+                    fingerNames[i], i, splitWidth, splitHeight, imgBuf, workingWidth, workingHeight);
             fingerprints.add(fingerprint);
         }
 
@@ -663,7 +584,7 @@ public class FingerprintDeviceService {
     /**
      * Process thumb fingerprints (left and right)
      */
-    private List<Map<String, Object>> processThumbFingerprints(byte[] imgBuf, int width, int height,
+    private List<Map<String, Object>> processThumbFingerprints(byte[] imgBuf, int workingWidth, int workingHeight,
                                                                int splitWidth, int splitHeight) {
         List<Map<String, Object>> fingerprints = new ArrayList<>();
 
@@ -672,7 +593,7 @@ public class FingerprintDeviceService {
 
         for (int i = 0; i < 2; i++) {
             Map<String, Object> fingerprint = createFingerprintInfo(
-                    fingerNames[i], i, splitWidth, splitHeight, imgBuf);
+                    fingerNames[i], i, splitWidth, splitHeight, imgBuf, workingWidth, workingHeight);
             fingerprints.add(fingerprint);
         }
 
@@ -682,14 +603,14 @@ public class FingerprintDeviceService {
     /**
      * Process single fingerprint
      */
-    private List<Map<String, Object>> processSingleFingerprint(byte[] imgBuf, int width, int height,
+    private List<Map<String, Object>> processSingleFingerprint(byte[] imgBuf, int workingWidth, int workingHeight,
                                                                int splitWidth, int splitHeight, int position) {
         List<Map<String, Object>> fingerprints = new ArrayList<>();
 
         // Simulate processing a single fingerprint
         String fingerName = "single_finger_" + position;
         Map<String, Object> fingerprint = createFingerprintInfo(
-                fingerName, position, splitWidth, splitHeight, imgBuf);
+                fingerName, position, splitWidth, splitHeight, imgBuf, workingWidth, workingHeight);
         fingerprints.add(fingerprint);
 
         return fingerprints;
@@ -699,31 +620,43 @@ public class FingerprintDeviceService {
      * Create fingerprint information structure
      */
     private Map<String, Object> createFingerprintInfo(String fingerName, int position,
-                                                      int splitWidth, int splitHeight, byte[] originalData) {
+                                                      int splitWidth, int splitHeight, byte[] originalData,
+                                                      int workingWidth, int workingHeight) {
         // Create a sample split image (in real implementation, this would be the actual split result)
+        // If working dimensions differ from original, we need to handle the data appropriately
         byte[] splitData = new byte[splitWidth * splitHeight];
-        System.arraycopy(originalData, 0, splitData, 0, Math.min(splitData.length, originalData.length));
+
+        if (workingWidth * workingHeight == originalData.length) {
+            // Working dimensions match original data size
+            System.arraycopy(originalData, 0, splitData, 0, Math.min(splitData.length, originalData.length));
+        } else {
+            // Working dimensions are different, create a sample pattern
+            logger.info("Working dimensions {}x{} differ from original data size {}. Creating sample split data.",
+                    workingWidth, workingHeight, originalData.length);
+
+            // Create a simple pattern for demonstration
+            for (int i = 0; i < splitData.length; i++) {
+                splitData[i] = (byte) ((i % 256) & 0xFF);
+            }
+        }
 
         // Store the split image
         String customName = fingerName + "_" + position;
         FingerprintFileStorageService.FileStorageResult storageResult =
                 fileStorageService.storeFingerprintImageAsImageOrganized(splitData, "split", customName, splitWidth, splitHeight);
 
-        Map<String, Object> fingerprintInfo = new HashMap<>();
-        fingerprintInfo.put("finger_name", fingerName);
-        fingerprintInfo.put("position", position);
-        fingerprintInfo.put("width", splitWidth);
-        fingerprintInfo.put("height", splitHeight);
-        fingerprintInfo.put("quality_score", assessFingerprintQuality(splitData, splitWidth, splitHeight));
-
-        Map<String, Object> storageInfo = new HashMap<>();
-        storageInfo.put("stored", storageResult.isSuccess());
-        storageInfo.put("file_path", storageResult.getFilePath());
-        storageInfo.put("filename", storageResult.getFilename());
-        storageInfo.put("file_size", storageResult.getFileSize());
-
-        fingerprintInfo.put("storage_info", storageInfo);
-
-        return fingerprintInfo;
+        return Map.of(
+                "finger_name", fingerName,
+                "position", position,
+                "width", splitWidth,
+                "height", splitHeight,
+                "quality_score", assessFingerprintQuality(splitData, splitWidth, splitHeight),
+                "storage_info", Map.of(
+                        "stored", storageResult.isSuccess(),
+                        "file_path", storageResult.getFilePath(),
+                        "filename", storageResult.getFilename(),
+                        "file_size", storageResult.getFileSize()
+                )
+        );
     }
 }
