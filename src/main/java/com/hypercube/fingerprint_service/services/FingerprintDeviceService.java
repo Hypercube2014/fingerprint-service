@@ -14,7 +14,6 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.List;
 import java.util.ArrayList;
 import java.util.HashMap;
-import java.util.stream.Collectors;
 
 @Service
 public class FingerprintDeviceService {
@@ -307,84 +306,6 @@ public class FingerprintDeviceService {
     }
 
     /**
-     * Test FPSPLIT library initialization with different dimensions
-     */
-    public Map<String, Object> testFpSplitInitialization() {
-        Map<String, Object> results = new HashMap<>();
-        List<Map<String, Object>> dimensionTests = new ArrayList<>();
-
-        try {
-            // Test different dimension combinations
-            int[][] testDimensions = {
-                    {1600, 1500},  // Original dimensions
-                    {800, 600},     // VGA
-                    {640, 480},     // Standard VGA
-                    {400, 300},     // Common fingerprint size
-                    {300, 400},     // Portrait orientation
-                    {200, 150},     // Very small
-                    {1024, 768},    // XGA
-                    {1280, 720},    // HD
-                    {1920, 1080}    // Full HD
-            };
-
-            for (int[] dims : testDimensions) {
-                int width = dims[0];
-                int height = dims[1];
-
-                Map<String, Object> testResult = new HashMap<>();
-                testResult.put("width", width);
-                testResult.put("height", height);
-                testResult.put("dimensions", width + "x" + height);
-
-                try {
-                    logger.info("Testing FPSPLIT_Init with dimensions: {}x{}", width, height);
-                    int ret = FpSplitLoad.instance.FPSPLIT_Init(width, height, 1);
-
-                    testResult.put("return_code", ret);
-                    testResult.put("success", ret == 1);
-                    testResult.put("status", ret == 1 ? "SUCCESS" : "FAILED");
-
-                    if (ret == 1) {
-                        logger.info("FPSPLIT_Init successful with dimensions: {}x{}", width, height);
-                        // Clean up after successful test
-                        FpSplitLoad.instance.FPSPLIT_Uninit();
-                    } else {
-                        logger.warn("FPSPLIT_Init failed with dimensions {}x{}, return code: {}", width, height, ret);
-                    }
-
-                } catch (Exception e) {
-                    testResult.put("return_code", -1);
-                    testResult.put("success", false);
-                    testResult.put("status", "ERROR");
-                    testResult.put("error", e.getMessage());
-                    logger.error("Exception testing FPSPLIT_Init with dimensions {}x{}: {}", width, height, e.getMessage());
-                }
-
-                dimensionTests.add(testResult);
-            }
-
-            results.put("dimension_tests", dimensionTests);
-            results.put("success", true);
-            results.put("total_tests", dimensionTests.size());
-
-            // Find working dimensions
-            List<Map<String, Object>> workingDimensions = dimensionTests.stream()
-                    .filter(test -> (Boolean) test.get("success"))
-                    .toList();
-
-            results.put("working_dimensions", workingDimensions);
-            results.put("working_count", workingDimensions.size());
-
-        } catch (Exception e) {
-            logger.error("Error testing FPSPLIT initialization: {}", e.getMessage(), e);
-            results.put("success", false);
-            results.put("error", e.getMessage());
-        }
-
-        return results;
-    }
-
-    /**
      * Split fingerprints from captured image
      */
     public Map<String, Object> splitFingerprints(int channel, int width, int height,
@@ -403,18 +324,26 @@ public class FingerprintDeviceService {
                 );
             }
 
-            // First capture a fingerprint image
-            Map<String, Object> captureResult = captureFingerprint(channel, width, height);
-            if (!(Boolean) captureResult.get("success")) {
-                return Map.of(
-                        "success", false,
-                        "error_details", "Failed to capture fingerprint for splitting: " + captureResult.get("error_details")
-                );
+            // Check if device is initialized
+            if (!isDeviceInitialized(channel)) {
+                logger.info("Device not initialized for channel {}, attempting to initialize", channel);
+                boolean initSuccess = initializeDevice(channel);
+                if (!initSuccess) {
+                    return Map.of(
+                            "success", false,
+                            "error_details", "Device not initialized and initialization failed"
+                    );
+                }
             }
 
-            // Get the raw image data from the capture result
-            String base64Image = (String) captureResult.get("image");
-            byte[] imgBuf = Base64.getDecoder().decode(base64Image);
+            // Capture fingerprint image directly for splitting (without storing as standard image)
+            byte[] imgBuf = captureFingerprintRawData(channel, width, height);
+            if (imgBuf == null) {
+                return Map.of(
+                        "success", false,
+                        "error_details", "Failed to capture fingerprint data for splitting"
+                );
+            }
 
             // Try to initialize split library with different dimension combinations
             int ret = -1;
@@ -523,6 +452,42 @@ public class FingerprintDeviceService {
                     "success", false,
                     "error_details", "Error splitting fingerprints: " + e.getMessage()
             );
+        }
+    }
+
+    /**
+     * Capture fingerprint raw data without storing as standard image (for internal use)
+     */
+    private byte[] captureFingerprintRawData(int channel, int width, int height) {
+        try {
+            logger.info("Capturing fingerprint raw data for channel: {} with dimensions: {}x{}", channel, width, height);
+
+            // Begin capture
+            int ret = ID_FprCapLoad.ID_FprCapinterface.instance.LIVESCAN_BeginCapture(channel);
+            if (ret != 1) {
+                logger.error("Failed to begin capture for channel: {} with error code: {}", channel, ret);
+                return null;
+            }
+
+            // Get fingerprint data
+            byte[] rawData = new byte[width * height];
+            ret = ID_FprCapLoad.ID_FprCapinterface.instance.LIVESCAN_GetFPRawData(channel, rawData);
+
+            if (ret != 1) {
+                ID_FprCapLoad.ID_FprCapinterface.instance.LIVESCAN_EndCapture(channel);
+                logger.error("Failed to capture fingerprint data for channel: {} with error code: {}", channel, ret);
+                return null;
+            }
+
+            // End capture
+            ID_FprCapLoad.ID_FprCapinterface.instance.LIVESCAN_EndCapture(channel);
+
+            logger.info("Successfully captured raw fingerprint data for channel: {} with size: {}", channel, rawData.length);
+            return rawData;
+
+        } catch (Exception e) {
+            logger.error("Error capturing raw fingerprint data for channel: {}: {}", channel, e.getMessage(), e);
+            return null;
         }
     }
 
@@ -662,5 +627,83 @@ public class FingerprintDeviceService {
         fingerprintInfo.put("storage_info", storageInfo);
 
         return fingerprintInfo;
+    }
+
+    /**
+     * Test FPSPLIT library initialization with different dimensions
+     */
+    public Map<String, Object> testFpSplitInitialization() {
+        Map<String, Object> results = new HashMap<>();
+        List<Map<String, Object>> dimensionTests = new ArrayList<>();
+
+        try {
+            // Test different dimension combinations
+            int[][] testDimensions = {
+                    {1600, 1500},  // Original dimensions
+                    {800, 600},     // VGA
+                    {640, 480},     // Standard VGA
+                    {400, 300},     // Common fingerprint size
+                    {300, 400},     // Portrait orientation
+                    {200, 150},     // Very small
+                    {1024, 768},    // XGA
+                    {1280, 720},    // HD
+                    {1920, 1080}    // Full HD
+            };
+
+            for (int[] dims : testDimensions) {
+                int width = dims[0];
+                int height = dims[1];
+
+                Map<String, Object> testResult = new HashMap<>();
+                testResult.put("width", width);
+                testResult.put("height", height);
+                testResult.put("dimensions", width + "x" + height);
+
+                try {
+                    logger.info("Testing FPSPLIT_Init with dimensions: {}x{}", width, height);
+                    int ret = FpSplitLoad.instance.FPSPLIT_Init(width, height, 1);
+
+                    testResult.put("return_code", ret);
+                    testResult.put("success", ret == 1);
+                    testResult.put("status", ret == 1 ? "SUCCESS" : "FAILED");
+
+                    if (ret == 1) {
+                        logger.info("FPSPLIT_Init successful with dimensions: {}x{}", width, height);
+                        // Clean up after successful test
+                        FpSplitLoad.instance.FPSPLIT_Uninit();
+                    } else {
+                        logger.warn("FPSPLIT_Init failed with dimensions {}x{}, return code: {}", width, height, ret);
+                    }
+
+                } catch (Exception e) {
+                    testResult.put("return_code", -1);
+                    testResult.put("success", false);
+                    testResult.put("status", "ERROR");
+                    testResult.put("error", e.getMessage());
+                    logger.error("Exception testing FPSPLIT_Init with dimensions {}x{}: {}", width, height, e.getMessage());
+                }
+
+                dimensionTests.add(testResult);
+            }
+
+            results.put("dimension_tests", dimensionTests);
+            results.put("success", true);
+            results.put("total_tests", dimensionTests.size());
+
+            // Find working dimensions
+            List<Map<String, Object>> workingDimensions = dimensionTests.stream()
+                    .filter(test -> (Boolean) test.get("success"))
+                    .toList();
+
+            results.put("working_dimensions", workingDimensions);
+            results.put("working_count", workingDimensions.size());
+
+        } catch (Exception e) {
+            logger.error("Error testing FPSPLIT initialization: {}", e.getMessage());
+            results.put("success", false);
+            results.put("error", e.getMessage());
+        }
+
+        return results;
     }
 }
