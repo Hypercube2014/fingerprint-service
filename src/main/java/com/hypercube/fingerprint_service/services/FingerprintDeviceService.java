@@ -13,6 +13,8 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.List;
 import java.util.ArrayList;
+import java.io.File;
+import java.util.HashMap;
 
 @Service
 public class FingerprintDeviceService {
@@ -305,6 +307,90 @@ public class FingerprintDeviceService {
     }
 
     /**
+     * Test DLL loading status for all required libraries
+     */
+    public Map<String, Object> testDllLoading() {
+        Map<String, Object> results = new HashMap<>();
+
+        try {
+            // Test FpSplit library
+            try {
+                int ret = FpSplitLoad.instance.FPSPLIT_Init(1600, 1500, 1);
+                if (ret == 1) {
+                    results.put("fpsplit_status", "SUCCESS");
+                    results.put("fpsplit_init_result", ret);
+                    // Clean up after test
+                    FpSplitLoad.instance.FPSPLIT_Uninit();
+                } else {
+                    results.put("fpsplit_status", "FAILED");
+                    results.put("fpsplit_init_result", ret);
+                }
+            } catch (Exception e) {
+                results.put("fpsplit_status", "ERROR");
+                results.put("fpsplit_error", e.getMessage());
+            }
+
+            // Test GAMC library
+            try {
+                int ret = GamcLoad.instance.MOSAIC_Init();
+                if (ret == 1) {
+                    results.put("gamc_status", "SUCCESS");
+                    results.put("gamc_init_result", ret);
+                    // Clean up after test
+                    GamcLoad.instance.MOSAIC_Close();
+                } else {
+                    results.put("gamc_status", "FAILED");
+                    results.put("gamc_init_result", ret);
+                }
+            } catch (Exception e) {
+                results.put("gamc_status", "ERROR");
+                results.put("gamc_error", e.getMessage());
+            }
+
+            // Test ID_FprCap library
+            try {
+                int ret = ID_FprCapLoad.ID_FprCapinterface.instance.LIVESCAN_Init();
+                if (ret == 1) {
+                    results.put("id_fprcap_status", "SUCCESS");
+                    results.put("id_fprcap_init_result", ret);
+                    // Clean up after test
+                    ID_FprCapLoad.ID_FprCapinterface.instance.LIVESCAN_Close();
+                } else {
+                    results.put("id_fprcap_status", "FAILED");
+                    results.put("id_fprcap_init_result", ret);
+                }
+            } catch (Exception e) {
+                results.put("id_fprcap_status", "ERROR");
+                results.put("id_fprcap_error", e.getMessage());
+            }
+
+            // Check DLL file existence
+            String[] dllFiles = {"FpSplit.dll", "GAMC.dll", "GALSXXYY.dll", "ZhiAngCamera.dll"};
+            Map<String, Object> dllExistence = new HashMap<>();
+
+            for (String dll : dllFiles) {
+                File dllFile = new File(dll);
+                dllExistence.put(dll, dllFile.exists());
+                if (dllFile.exists()) {
+                    dllExistence.put(dll + "_size", dllFile.length());
+                    dllExistence.put(dll + "_path", dllFile.getAbsolutePath());
+                }
+            }
+
+            results.put("dll_files", dllExistence);
+            results.put("success", true);
+            results.put("platform_info", getPlatformInfo());
+
+        } catch (Exception e) {
+            logger.error("Error testing DLL loading: {}", e.getMessage(), e);
+            results.put("success", false);
+            results.put("error", e.getMessage());
+        }
+
+        return results;
+    }
+
+    /**
      * Split fingerprints from captured image
      */
     public Map<String, Object> splitFingerprints(int channel, int width, int height,
@@ -339,10 +425,10 @@ public class FingerprintDeviceService {
             // Initialize split library
             int ret = FpSplitLoad.instance.FPSPLIT_Init(width, height, 1);
             if (ret != 1) {
-                logger.error("Failed to initialize split library for channel: {}", channel);
+                logger.error("Failed to initialize split library for channel: {}. Return code: {}", channel, ret);
                 return Map.of(
                         "success", false,
-                        "error_details", "Failed to initialize split library"
+                        "error_details", "Failed to initialize split library. Return code: " + ret
                 );
             }
 
@@ -507,18 +593,21 @@ public class FingerprintDeviceService {
         FingerprintFileStorageService.FileStorageResult storageResult =
                 fileStorageService.storeFingerprintImageAsImageOrganized(splitData, "split", customName, splitWidth, splitHeight);
 
-        return Map.of(
-                "finger_name", fingerName,
-                "position", position,
-                "width", splitWidth,
-                "height", splitHeight,
-                "quality_score", assessFingerprintQuality(splitData, splitWidth, splitHeight),
-                "storage_info", Map.of(
-                        "stored", storageResult.isSuccess(),
-                        "file_path", storageResult.getFilePath(),
-                        "filename", storageResult.getFilename(),
-                        "file_size", storageResult.getFileSize()
-                )
-        );
+        Map<String, Object> fingerprintInfo = new HashMap<>();
+        fingerprintInfo.put("finger_name", fingerName);
+        fingerprintInfo.put("position", position);
+        fingerprintInfo.put("width", splitWidth);
+        fingerprintInfo.put("height", splitHeight);
+        fingerprintInfo.put("quality_score", assessFingerprintQuality(splitData, splitWidth, splitHeight));
+
+        Map<String, Object> storageInfo = new HashMap<>();
+        storageInfo.put("stored", storageResult.isSuccess());
+        storageInfo.put("file_path", storageResult.getFilePath());
+        storageInfo.put("filename", storageResult.getFilename());
+        storageInfo.put("file_size", storageResult.getFileSize());
+
+        fingerprintInfo.put("storage_info", storageInfo);
+
+        return fingerprintInfo;
     }
 }

@@ -270,6 +270,24 @@ public class FingerprintController {
     }
 
     /**
+     * Test DLL loading status
+     */
+    @GetMapping("/test/dll")
+    public ResponseEntity<Map<String, Object>> testDllLoading() {
+        try {
+            Map<String, Object> dllStatus = deviceService.testDllLoading();
+            return ResponseEntity.ok(dllStatus);
+        } catch (Exception e) {
+            logger.error("Error testing DLL loading: {}", e.getMessage(), e);
+            return ResponseEntity.status(500).body(Map.of(
+                    "success", false,
+                    "message", "Error testing DLL loading: " + e.getMessage(),
+                    "timestamp", System.currentTimeMillis()
+            ));
+        }
+    }
+
+    /**
      * Test image storage with different formats
      */
     @PostMapping("/storage/test")
