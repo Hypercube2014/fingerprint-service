@@ -412,6 +412,37 @@ public class FingerprintController {
     }
 
     /**
+     * Test FPSPLIT library initialization with different dimensions
+     * This helps debug FPSPLIT initialization issues
+     */
+    @GetMapping("/test/fpsplit")
+    public ResponseEntity<Map<String, Object>> testFpSplitInitialization() {
+        try {
+            // Check platform compatibility first
+            if (!deviceService.isPlatformSupported()) {
+                return ResponseEntity.status(400).body(Map.of(
+                        "success", false,
+                        "message", "Platform not supported. This SDK requires Windows.",
+                        "platform_info", deviceService.getPlatformInfo(),
+                        "timestamp", System.currentTimeMillis()
+                ));
+            }
+
+            Map<String, Object> testResult = deviceService.testFpSplitInitialization();
+            return ResponseEntity.ok(testResult);
+
+        } catch (Exception e) {
+            logger.error("Error testing FPSPLIT initialization: {}", e.getMessage(), e);
+            return ResponseEntity.status(500).body(Map.of(
+                    "success", false,
+                    "message", "Error testing FPSPLIT initialization: " + e.getMessage(),
+                    "platform_info", deviceService.getPlatformInfo(),
+                    "timestamp", System.currentTimeMillis()
+            ));
+        }
+    }
+
+    /**
      * Get storage statistics
      */
     @GetMapping("/storage/stats")

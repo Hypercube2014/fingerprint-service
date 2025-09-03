@@ -325,30 +325,33 @@ public class FingerprintDeviceService {
                 );
             }
 
-            // First capture the fingerprint image
-            Map<String, Object> captureResult = captureFingerprint(channel, width, height);
-            if (!(Boolean) captureResult.get("success")) {
-                return Map.of(
-                        "success", false,
-                        "error_details", "Failed to capture fingerprint for splitting: " + captureResult.get("error_details")
-                );
-            }
-
-            // Get the raw image data from the capture result
-            String base64Image = (String) captureResult.get("image");
-            byte[] rawData = Base64.getDecoder().decode(base64Image);
-
-            // Initialize the FPSPLIT library
+            // Initialize the FPSPLIT library FIRST (before capture)
+            // This allows the library to communicate with hardware and show green indicators
             int ret = FpSplitLoad.instance.FPSPLIT_Init(width, height, 1);
             if (ret != 1) {
-                logger.error("Failed to initialize FPSPLIT library for thumb splitting");
+                logger.error("Failed to initialize FPSPLIT library for thumb splitting. Return code: {}", ret);
                 return Map.of(
                         "success", false,
-                        "error_details", "Failed to initialize FPSPLIT library"
+                        "error_details", "Failed to initialize FPSPLIT library. Return code: " + ret
                 );
             }
 
+            logger.info("FPSPLIT library initialized successfully. Hardware should now show green thumb indicators.");
+
             try {
+                // Now capture the fingerprint image (after FPSPLIT is initialized)
+                Map<String, Object> captureResult = captureFingerprint(channel, width, height);
+                if (!(Boolean) captureResult.get("success")) {
+                    return Map.of(
+                            "success", false,
+                            "error_details", "Failed to capture fingerprint for splitting: " + captureResult.get("error_details")
+                    );
+                }
+
+                // Get the raw image data from the capture result
+                String base64Image = (String) captureResult.get("image");
+                byte[] rawData = Base64.getDecoder().decode(base64Image);
+
                 // Prepare output buffer for split results
                 // We expect 2 thumbs, so we'll prepare space for them
                 int size = 28; // Size of FPSPLIT_INFO structure
@@ -368,12 +371,14 @@ public class FingerprintDeviceService {
                 );
 
                 if (ret != 1) {
-                    logger.error("Failed to split thumbs with FPSPLIT library");
+                    logger.error("Failed to split thumbs with FPSPLIT library. Return code: {}", ret);
                     return Map.of(
                             "success", false,
-                            "error_details", "Failed to split thumbs with FPSPLIT library"
+                            "error_details", "Failed to split thumbs with FPSPLIT library. Return code: " + ret
                     );
                 }
+
+                logger.info("FPSPLIT splitting completed successfully. Processing results...");
 
                 // Process the split results and store individual thumb images
                 List<Map<String, Object>> thumbs = new ArrayList<>();
@@ -408,6 +413,7 @@ public class FingerprintDeviceService {
             } finally {
                 // Always cleanup the FPSPLIT library
                 FpSplitLoad.instance.FPSPLIT_Uninit();
+                logger.info("FPSPLIT library uninitialized successfully");
             }
 
         } catch (UnsatisfiedLinkError e) {
@@ -463,6 +469,93 @@ public class FingerprintDeviceService {
         } catch (Exception e) {
             logger.error("Error processing thumb {}: {}", thumbName, e.getMessage());
             return null;
+        }
+    }
+
+    /**
+     * Test FPSPLIT library initialization with different dimensions
+     * This helps debug initialization issues
+     */
+    public Map<String, Object> testFpSplitInitialization() {
+        try {
+            logger.info("Testing FPSPLIT library initialization with different dimensions...");
+
+            // Check platform compatibility
+            if (!isWindows) {
+                return Map.of(
+                        "success", false,
+                        "error_details", "Platform not supported. This SDK requires Windows."
+                );
+            }
+
+            // Test different dimension combinations
+            int[][] testDimensions = {
+                    {1600, 1500},  // Original dimensions
+                    {800, 600},    // Smaller dimensions
+                    {640, 480},    // Standard dimensions
+                    {400, 300},    // Small dimensions
+                    {320, 240}     // Very small dimensions
+            };
+
+            List<Map<String, Object>> testResults = new ArrayList<>();
+
+            for (int[] dims : testDimensions) {
+                int width = dims[0];
+                int height = dims[1];
+
+                try {
+                    logger.info("Testing FPSPLIT_Init with dimensions: {}x{}", width, height);
+                    int ret = FpSplitLoad.instance.FPSPLIT_Init(width, height, 1);
+
+                    Map<String, Object> result = Map.of(
+                            "dimensions", width + "x" + height,
+                            "success", ret == 1,
+                            "return_code", ret,
+                            "message", ret == 1 ? "Success" : "Failed"
+                    );
+
+                    testResults.add(result);
+
+                    if (ret == 1) {
+                        logger.info("FPSPLIT_Init SUCCESS with dimensions: {}x{}", width, height);
+                        // Clean up after successful test
+                        FpSplitLoad.instance.FPSPLIT_Uninit();
+                    } else {
+                        logger.warn("FPSPLIT_Init FAILED with dimensions: {}x{}, return code: {}", width, height, ret);
+                    }
+
+                } catch (Exception e) {
+                    logger.error("Error testing FPSPLIT_Init with dimensions {}x{}: {}", width, height, e.getMessage());
+                    testResults.add(Map.of(
+                            "dimensions", width + "x" + height,
+                            "success", false,
+                            "return_code", -1,
+                            "message", "Exception: " + e.getMessage()
+                    ));
+                }
+            }
+
+            // Find the best working dimensions
+            Map<String, Object> bestResult = testResults.stream()
+                    .filter(r -> (Boolean) r.get("success"))
+                    .findFirst()
+                    .orElse(null);
+
+            return Map.of(
+                    "success", true,
+                    "test_results", testResults,
+                    "best_working_dimensions", bestResult != null ? bestResult.get("dimensions") : "None found",
+                    "recommendation", bestResult != null ?
+                            "Use dimensions: " + bestResult.get("dimensions") :
+                            "Try smaller dimensions like 400x300 or 320x240"
+            );
+
+        } catch (Exception e) {
+            logger.error("Error testing FPSPLIT initialization: {}", e.getMessage(), e);
+            return Map.of(
+                    "success", false,
+                    "error_details", "Error testing FPSPLIT initialization: " + e.getMessage()
+            );
         }
     }
 }
