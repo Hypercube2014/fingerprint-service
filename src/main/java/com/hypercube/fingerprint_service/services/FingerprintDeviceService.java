@@ -453,14 +453,13 @@ public class FingerprintDeviceService {
     }
 
     /**
-     * Split two thumbs from a single captured image
-     * This method captures an image and automatically splits it into left and right thumb images
-     * Following the exact sequence from the demo application for proper hardware interaction
+     * Split two thumbs from a single captured image - CLEAN DEMO APP IMPLEMENTATION
+     * This method follows the EXACT sequence from the demo application to properly activate hardware
      */
     public Map<String, Object> splitTwoThumbs(int channel, int width, int height, int splitWidth, int splitHeight) {
         try {
-            logger.info("Splitting two thumbs for channel: {} with dimensions: {}x{} -> {}x{}",
-                    channel, width, height, splitWidth, splitHeight);
+            logger.info("=== CLEAN DEMO APP IMPLEMENTATION: Split Two Thumbs ===");
+            logger.info("Channel: {}, Dimensions: {}x{} -> {}x{}", channel, width, height, splitWidth, splitHeight);
 
             // Check platform compatibility
             if (!isWindows) {
@@ -471,9 +470,8 @@ public class FingerprintDeviceService {
                 );
             }
 
-            // CRITICAL: Follow demo app sequence exactly
-            // Step 1: Initialize device first (like demo app case 0)
-            logger.info("Step 1: Initializing fingerprint device (following demo app sequence)");
+            // STEP 1: Initialize device (EXACT demo app case 0)
+            logger.info("STEP 1: Initializing device (demo app case 0)");
             int deviceRet = ID_FprCapLoad.ID_FprCapinterface.instance.LIVESCAN_Init();
             if (deviceRet != 1) {
                 logger.error("Device initialization failed with return code: {}", deviceRet);
@@ -482,61 +480,53 @@ public class FingerprintDeviceService {
                         "error_details", "Device initialization failed with return code: " + deviceRet
                 );
             }
-            logger.info("Device initialized successfully");
+            logger.info("✓ Device initialized successfully");
 
-            // Step 2: Initialize FPSPLIT library (this triggers green thumb indicators)
-            logger.info("Step 2: Initializing FPSPLIT library with dimensions: {}x{} (this should show green thumb indicators)", width, height);
-            int ret = FpSplitLoad.instance.FPSPLIT_Init(width, height, 1);
-            if (ret != 1) {
-                logger.error("Failed to initialize FPSPLIT library for thumb splitting. Return code: {}", ret);
+            // STEP 2: Initialize FPSPLIT library (EXACT demo app case 0)
+            logger.info("STEP 2: Initializing FPSPLIT library with dimensions: {}x{}", width, height);
+            logger.info("This should activate the green thumb indicators on your 4-4-2 scanner!");
+            int fpsplitRet = FpSplitLoad.instance.FPSPLIT_Init(width, height, 1);
+            logger.info("FPSPLIT_Init return value: {}", fpsplitRet);
 
-                // Try with smaller dimensions if the original ones fail
-                if (ret == 0) {
-                    logger.info("Return code 0 detected. Trying with smaller dimensions...");
-                    int[][] fallbackDimensions = {{800, 600}, {640, 480}, {400, 300}};
+            if (fpsplitRet != 1) {
+                logger.error("FPSPLIT initialization failed with return code: {}", fpsplitRet);
 
-                    for (int[] dims : fallbackDimensions) {
-                        int fallbackWidth = dims[0];
-                        int fallbackHeight = dims[1];
-                        logger.info("Trying FPSPLIT_Init with fallback dimensions: {}x{}", fallbackWidth, fallbackHeight);
+                // Try with device's actual dimensions
+                try {
+                    int[] actualWidth = new int[1];
+                    int[] actualHeight = new int[1];
+                    ID_FprCapLoad.ID_FprCapinterface.instance.LIVESCAN_GetMaxImageSize(0, actualWidth, actualHeight);
+                    logger.info("Trying with device's actual dimensions: {}x{}", actualWidth[0], actualHeight[0]);
 
-                        ret = FpSplitLoad.instance.FPSPLIT_Init(fallbackWidth, fallbackHeight, 1);
-                        if (ret == 1) {
-                            logger.info("FPSPLIT_Init SUCCESS with fallback dimensions: {}x{}", fallbackWidth, fallbackHeight);
-                            // Update dimensions to use the working ones
-                            width = fallbackWidth;
-                            height = fallbackHeight;
-                            break;
-                        } else {
-                            logger.warn("FPSPLIT_Init FAILED with fallback dimensions {}x{}, return code: {}", fallbackWidth, fallbackHeight, ret);
-                        }
+                    fpsplitRet = FpSplitLoad.instance.FPSPLIT_Init(actualWidth[0], actualHeight[0], 1);
+                    if (fpsplitRet == 1) {
+                        width = actualWidth[0];
+                        height = actualHeight[0];
+                        logger.info("✓ FPSPLIT initialized with device dimensions: {}x{}", width, height);
+                    } else {
+                        logger.error("FPSPLIT failed even with device dimensions. Return code: {}", fpsplitRet);
+                        return Map.of(
+                                "success", false,
+                                "error_details", "FPSPLIT initialization failed with return code: " + fpsplitRet + ". Check if ZAZ_FpStdLib.dll is present and hardware is connected."
+                        );
                     }
-
-                    // If still no success, return error
-                    if (ret != 1) {
-                        Map<String, Object> errorResponse = new HashMap<>();
-                        errorResponse.put("success", false);
-                        errorResponse.put("error_details", "Failed to initialize FPSPLIT library with any dimensions. Last return code: " + ret);
-                        errorResponse.put("tried_dimensions", List.of("1600x1500", "800x600", "640x480", "400x300"));
-                        errorResponse.put("note", "FPSPLIT library may require specific hardware or driver setup");
-                        return errorResponse;
-                    }
-                } else {
+                } catch (Exception e) {
+                    logger.error("Error getting device dimensions: {}", e.getMessage());
                     return Map.of(
                             "success", false,
-                            "error_details", "Failed to initialize FPSPLIT library. Return code: " + ret
+                            "error_details", "FPSPLIT initialization failed and cannot get device dimensions: " + e.getMessage()
                     );
                 }
+            } else {
+                logger.info("✓ FPSPLIT library initialized successfully with dimensions: {}x{}", width, height);
             }
 
-            logger.info("FPSPLIT library initialized successfully with dimensions: {}x{}. Hardware should now show green thumb indicators.", width, height);
-
-            // Step 3: Play sound to indicate two-thumb mode is ready (like demo app)
+            // STEP 3: Play two-thumb selection sound (like demo app)
             try {
-                logger.info("Step 3: Playing two-thumb selection sound");
-                int beepRet = ID_FprCapLoad.ID_FprCapinterface.instance.LIVESCAN_Beep(2); // 2 beeps for two thumbs
+                logger.info("STEP 3: Playing two-thumb selection sound");
+                int beepRet = ID_FprCapLoad.ID_FprCapinterface.instance.LIVESCAN_Beep(2);
                 if (beepRet == 1) {
-                    logger.info("Two-thumb selection sound played successfully");
+                    logger.info("✓ Two-thumb selection sound played successfully");
                 } else {
                     logger.warn("Failed to play two-thumb selection sound, return code: {}", beepRet);
                 }
@@ -545,49 +535,67 @@ public class FingerprintDeviceService {
             }
 
             try {
-                // Step 4: Capture the fingerprint image (after FPSPLIT is initialized and green indicators are shown)
-                logger.info("Step 4: Capturing fingerprint image with green thumb indicators active");
-                Map<String, Object> captureResult = captureFingerprint(channel, width, height);
-                if (!(Boolean) captureResult.get("success")) {
+                // STEP 4: Capture fingerprint image (EXACT demo app case 2)
+                logger.info("STEP 4: Capturing fingerprint image");
+                logger.info("The green thumb indicators should now be active on your scanner!");
+
+                int captureRet = ID_FprCapLoad.ID_FprCapinterface.instance.LIVESCAN_BeginCapture(channel);
+                if (captureRet != 1) {
+                    logger.error("Failed to begin capture with return code: {}", captureRet);
                     return Map.of(
                             "success", false,
-                            "error_details", "Failed to capture fingerprint for splitting: " + captureResult.get("error_details")
+                            "error_details", "Failed to begin capture with return code: " + captureRet
                     );
                 }
 
-                // Get the raw image data from the capture result
-                String base64Image = (String) captureResult.get("image");
-                byte[] rawData = Base64.getDecoder().decode(base64Image);
+                // Get fingerprint data
+                byte[] rawData = new byte[width * height];
+                int dataRet = ID_FprCapLoad.ID_FprCapinterface.instance.LIVESCAN_GetFPRawData(channel, rawData);
+                if (dataRet != 1) {
+                    ID_FprCapLoad.ID_FprCapinterface.instance.LIVESCAN_EndCapture(channel);
+                    logger.error("Failed to get fingerprint data with return code: {}", dataRet);
+                    return Map.of(
+                            "success", false,
+                            "error_details", "Failed to get fingerprint data with return code: " + dataRet
+                    );
+                }
 
-                // Step 5: Prepare output buffer for split results (like demo app case 2)
-                logger.info("Step 5: Preparing split buffers and performing FPSPLIT_DoSplit");
-                int size = 28; // Size of FPSPLIT_INFO structure
-                Pointer infosPtr = new Memory(size * 2); // Space for 2 thumbs
+                // End capture
+                ID_FprCapLoad.ID_FprCapinterface.instance.LIVESCAN_EndCapture(channel);
+                logger.info("✓ Fingerprint captured successfully");
 
-                // Prepare memory for each thumb's output buffer (following demo app pattern)
-                for (int i = 0; i < 2; i++) {
-                    Pointer ptr = infosPtr.share(i * size + 24);
+                // STEP 5: Prepare FPSPLIT structures (EXACT demo app case 2)
+                logger.info("STEP 5: Preparing FPSPLIT structures for splitting");
+                int size = 28; // Size of FPSPLIT_INFO structure (from demo app)
+                Pointer infosPtr = new Memory(size * 10); // Space for up to 10 fingers (like demo app)
+
+                // Allocate memory for each finger's output buffer (exact demo app pattern)
+                for (int i = 0; i < 10; i++) {
+                    Pointer ptr = infosPtr.share(i * size + 24); // Exact offset from demo app
                     Pointer p = new Memory(splitWidth * splitHeight);
                     ptr.setPointer(0, p);
                 }
 
-                // Perform the splitting (like demo app case 2)
+                // STEP 6: Perform the splitting (EXACT demo app case 2)
+                logger.info("STEP 6: Performing FPSPLIT_DoSplit");
                 int fpNum = 0;
-                ret = FpSplitLoad.instance.FPSPLIT_DoSplit(
+                int splitRet = FpSplitLoad.instance.FPSPLIT_DoSplit(
                         rawData, width, height, 1, splitWidth, splitHeight, fpNum, infosPtr
                 );
+                logger.info("FPSPLIT_DoSplit return value: {}", splitRet);
 
-                if (ret != 1) {
-                    logger.error("Failed to split thumbs with FPSPLIT library. Return code: {}", ret);
+                if (splitRet != 1) {
+                    logger.error("FPSPLIT_DoSplit failed with return code: {}", splitRet);
                     return Map.of(
                             "success", false,
-                            "error_details", "Failed to split thumbs with FPSPLIT library. Return code: " + ret
+                            "error_details", "FPSPLIT_DoSplit failed with return code: " + splitRet
                     );
                 }
 
-                logger.info("FPSPLIT splitting completed successfully. Processing results...");
+                logger.info("✓ FPSPLIT splitting completed successfully");
 
-                // Step 6: Process the split results and store individual thumb images
+                // STEP 7: Process the split results and store individual thumb images
+                logger.info("STEP 7: Processing split results");
                 List<Map<String, Object>> thumbs = new ArrayList<>();
 
                 // Extract left thumb (position 0)
@@ -602,12 +610,12 @@ public class FingerprintDeviceService {
                     thumbs.add(rightThumb);
                 }
 
-                // Step 7: Play success sound
+                // STEP 8: Play success sound
                 try {
-                    logger.info("Step 7: Playing success sound");
-                    int successBeepRet = ID_FprCapLoad.ID_FprCapinterface.instance.LIVESCAN_Beep(1); // 1 beep for success
+                    logger.info("STEP 8: Playing success sound");
+                    int successBeepRet = ID_FprCapLoad.ID_FprCapinterface.instance.LIVESCAN_Beep(1);
                     if (successBeepRet == 1) {
-                        logger.info("Success sound played successfully");
+                        logger.info("✓ Success sound played successfully");
                     } else {
                         logger.warn("Failed to play success sound, return code: {}", successBeepRet);
                     }
@@ -615,7 +623,7 @@ public class FingerprintDeviceService {
                     logger.warn("Error playing success sound: {}", e.getMessage());
                 }
 
-                logger.info("Successfully split {} thumbs for channel: {}", thumbs.size(), channel);
+                logger.info("✓ Successfully split {} thumbs for channel: {}", thumbs.size(), channel);
 
                 Map<String, Object> successResponse = new HashMap<>();
                 successResponse.put("success", true);
@@ -628,23 +636,24 @@ public class FingerprintDeviceService {
                 successResponse.put("original_height", height);
                 successResponse.put("channel", channel);
                 successResponse.put("captured_at", new Date());
-                successResponse.put("note", "FPSPLIT library initialized successfully with dimensions: " + width + "x" + height + ". Green thumb indicators should have been shown during capture.");
-                successResponse.put("sequence_followed", "Demo app sequence: Device Init -> FPSPLIT Init -> Sound -> Capture -> Split -> Success Sound");
+                successResponse.put("fpsplit_return_code", splitRet);
+                successResponse.put("note", "Clean demo app implementation - FPSPLIT initialized with dimensions: " + width + "x" + height);
+                successResponse.put("hardware_activation", "Green thumb indicators should have been shown during capture");
 
                 return successResponse;
 
             } finally {
-                // Always cleanup the FPSPLIT library (like demo app case 1)
-                logger.info("Cleaning up FPSPLIT library");
+                // STEP 9: Cleanup FPSPLIT library (EXACT demo app case 1)
+                logger.info("STEP 9: Cleaning up FPSPLIT library");
                 FpSplitLoad.instance.FPSPLIT_Uninit();
-                logger.info("FPSPLIT library uninitialized successfully");
+                logger.info("✓ FPSPLIT library uninitialized successfully");
             }
 
         } catch (UnsatisfiedLinkError e) {
-            logger.error("Native library cannot be loaded. This is likely because you're running on Linux but the SDK requires Windows DLLs. Error: {}", e.getMessage());
+            logger.error("Native library cannot be loaded. Error: {}", e.getMessage());
             return Map.of(
                     "success", false,
-                    "error_details", "Native library cannot be loaded. This SDK requires Windows."
+                    "error_details", "Native library cannot be loaded. Check if all DLL files are present: GALSXXYY.dll, FpSplit.dll, ZAZ_FpStdLib.dll"
             );
         } catch (Exception e) {
             logger.error("Error splitting two thumbs for channel: {}: {}", channel, e.getMessage(), e);
