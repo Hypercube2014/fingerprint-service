@@ -217,6 +217,54 @@ public class FingerprintFileStorageService {
     }
 
     /**
+     * Store BufferedImage as organized image file
+     */
+    public FileStorageResult storeBufferedImageAsImageOrganized(BufferedImage image, String imageType, String customName) {
+        try {
+            // Create date-based directory structure
+            LocalDateTime now = LocalDateTime.now();
+            String yearMonth = now.format(DateTimeFormatter.ofPattern("yyyy/MM"));
+            String day = now.format(DateTimeFormatter.ofPattern("dd"));
+
+            // Determine storage path based on image type
+            String storagePath = getStoragePathForType(imageType);
+
+            // Create full directory path with date structure
+            Path fullPath = Paths.get(baseStoragePath, storagePath, yearMonth, day);
+            Files.createDirectories(fullPath);
+
+            // Generate unique filename
+            String filename = generateUniqueFilename(imageType, customName);
+            Path filePath = fullPath.resolve(filename);
+
+            // Write image file
+            boolean success = ImageIO.write(image, imageFormat, filePath.toFile());
+
+            if (success) {
+                logger.info("BufferedImage stored in organized structure: {}", filePath);
+
+                return new FileStorageResult(
+                        true,
+                        "BufferedImage stored successfully",
+                        filePath.toString(),
+                        filename,
+                        Files.size(filePath),
+                        imageType
+                );
+            } else {
+                String errorMsg = "Failed to write BufferedImage to file: " + filePath;
+                logger.error(errorMsg);
+                return new FileStorageResult(false, errorMsg, null, null, 0, imageType);
+            }
+
+        } catch (Exception e) {
+            String errorMsg = "Error storing BufferedImage: " + e.getMessage();
+            logger.error(errorMsg, e);
+            return new FileStorageResult(false, errorMsg, null, null, 0, imageType);
+        }
+    }
+
+    /**
      * Create organized directory structure with date-based subdirectories
      */
     public FileStorageResult storeFingerprintImageOrganized(byte[] imageData, String imageType, String customName) {

@@ -17,6 +17,7 @@ import java.util.List;
 import com.sun.jna.Pointer;
 import com.sun.jna.Memory;
 import java.util.HashMap;
+import java.awt.image.BufferedImage;
 
 @Service
 public class FingerprintDeviceService {
@@ -309,6 +310,149 @@ public class FingerprintDeviceService {
     }
 
     /**
+     * Split two thumbs from a single captured image using manual image processing
+     * This method captures an image and manually splits it into left and right thumb images
+     * This is a fallback solution when FPSPLIT library is not available or working
+     */
+    public Map<String, Object> splitTwoThumbsManual(int channel, int width, int height, int splitWidth, int splitHeight) {
+        try {
+            logger.info("Manual thumb splitting for channel: {} with dimensions: {}x{} -> {}x{}",
+                    channel, width, height, splitWidth, splitHeight);
+
+            // Check platform compatibility
+            if (!isWindows) {
+                logger.error("Platform not supported. This SDK requires Windows.");
+                return Map.of(
+                        "success", false,
+                        "error_details", "Platform not supported. This SDK requires Windows."
+                );
+            }
+
+            // Ensure device is initialized
+            if (!isDeviceInitialized(channel)) {
+                logger.info("Device not initialized for channel {}, attempting to initialize", channel);
+                boolean initSuccess = initializeDevice(channel);
+                if (!initSuccess) {
+                    return Map.of(
+                            "success", false,
+                            "error_details", "Failed to initialize device for channel: " + channel
+                    );
+                }
+                logger.info("Device initialized successfully for channel: {}", channel);
+            }
+
+            // Capture the full image
+            logger.info("Capturing full image for manual splitting...");
+            Map<String, Object> captureResult = captureFingerprint(channel, width, height);
+            if (!(Boolean) captureResult.get("success")) {
+                return Map.of(
+                        "success", false,
+                        "error_details", "Failed to capture fingerprint for splitting: " + captureResult.get("error_details")
+                );
+            }
+
+            // Get the raw image data
+            String base64Image = (String) captureResult.get("image");
+            byte[] rawData = Base64.getDecoder().decode(base64Image);
+
+            // Convert raw data to BufferedImage
+            BufferedImage fullImage = convertRawDataToImage(rawData, width, height);
+            if (fullImage == null) {
+                return Map.of(
+                        "success", false,
+                        "error_details", "Failed to convert raw data to image"
+                );
+            }
+
+            // Calculate split positions (assuming two thumbs side by side)
+            int leftThumbX = 0;
+            int leftThumbY = 0;
+            int rightThumbX = width / 2;
+            int rightThumbY = 0;
+
+            // Ensure split dimensions don't exceed image bounds
+            int actualSplitWidth = Math.min(splitWidth, width / 2);
+            int actualSplitHeight = Math.min(splitHeight, height);
+
+            // Extract left thumb
+            BufferedImage leftThumb = fullImage.getSubimage(leftThumbX, leftThumbY, actualSplitWidth, actualSplitHeight);
+
+            // Extract right thumb
+            BufferedImage rightThumb = fullImage.getSubimage(rightThumbX, rightThumbY, actualSplitWidth, actualSplitHeight);
+
+            // Store the individual thumb images
+            List<Map<String, Object>> thumbs = new ArrayList<>();
+
+            // Store left thumb
+            String leftThumbName = String.format("left_thumb_%dx%d", actualSplitWidth, actualSplitHeight);
+            FingerprintFileStorageService.FileStorageResult leftResult =
+                    fileStorageService.storeBufferedImageAsImageOrganized(leftThumb, "split", leftThumbName);
+
+            if (leftResult.isSuccess()) {
+                thumbs.add(Map.of(
+                        "thumb_type", "left_thumb",
+                        "position", "left",
+                        "width", actualSplitWidth,
+                        "height", actualSplitHeight,
+                        "file_path", leftResult.getFilePath(),
+                        "filename", leftResult.getFilename(),
+                        "file_size", leftResult.getFileSize(),
+                        "storage_success", true
+                ));
+                logger.info("Left thumb stored successfully: {}", leftResult.getFilePath());
+            } else {
+                logger.warn("Failed to store left thumb: {}", leftResult.getMessage());
+            }
+
+            // Store right thumb
+            String rightThumbName = String.format("right_thumb_%dx%d", actualSplitWidth, actualSplitHeight);
+            FingerprintFileStorageService.FileStorageResult rightResult =
+                    fileStorageService.storeBufferedImageAsImageOrganized(rightThumb, "split", rightThumbName);
+
+            if (rightResult.isSuccess()) {
+                thumbs.add(Map.of(
+                        "thumb_type", "right_thumb",
+                        "position", "right",
+                        "width", actualSplitWidth,
+                        "height", actualSplitHeight,
+                        "file_path", rightResult.getFilePath(),
+                        "filename", rightResult.getFilename(),
+                        "file_size", rightResult.getFileSize(),
+                        "storage_success", true
+                ));
+                logger.info("Right thumb stored successfully: {}", rightResult.getFilePath());
+            } else {
+                logger.warn("Failed to store right thumb: {}", rightResult.getMessage());
+            }
+
+            logger.info("Manual thumb splitting completed. {} thumbs processed.", thumbs.size());
+
+            Map<String, Object> successResponse = new HashMap<>();
+            successResponse.put("success", true);
+            successResponse.put("split_type", "manual_two_thumbs");
+            successResponse.put("thumb_count", thumbs.size());
+            successResponse.put("thumbs", thumbs);
+            successResponse.put("split_width", actualSplitWidth);
+            successResponse.put("split_height", actualSplitHeight);
+            successResponse.put("original_width", width);
+            successResponse.put("original_height", height);
+            successResponse.put("channel", channel);
+            successResponse.put("captured_at", new Date());
+            successResponse.put("method", "manual_image_processing");
+            successResponse.put("note", "Manual splitting used because FPSPLIT library is not working");
+
+            return successResponse;
+
+        } catch (Exception e) {
+            logger.error("Error in manual thumb splitting for channel: {}: {}", channel, e.getMessage(), e);
+            return Map.of(
+                    "success", false,
+                    "error_details", "Error in manual thumb splitting: " + e.getMessage()
+            );
+        }
+    }
+
+    /**
      * Split two thumbs from a single captured image
      * This method captures an image and automatically splits it into left and right thumb images
      * Following the exact sequence from the demo application for proper hardware interaction
@@ -553,6 +697,21 @@ public class FingerprintDeviceService {
     }
 
     /**
+     * Convert raw byte data to BufferedImage
+     */
+    private BufferedImage convertRawDataToImage(byte[] rawData, int width, int height) {
+        try {
+            BufferedImage image = new BufferedImage(width, height, BufferedImage.TYPE_BYTE_GRAY);
+            byte[] imageData = ((java.awt.image.DataBufferByte) image.getRaster().getDataBuffer()).getData();
+            System.arraycopy(rawData, 0, imageData, 0, Math.min(rawData.length, imageData.length));
+            return image;
+        } catch (Exception e) {
+            logger.error("Error converting raw data to image: {}", e.getMessage());
+            return null;
+        }
+    }
+
+    /**
      * Play sound feedback for different operations
      * @param soundType 1 = single beep (success), 2 = double beep (two-thumb mode), 3 = error beep
      */
@@ -574,6 +733,179 @@ public class FingerprintDeviceService {
         } catch (Exception e) {
             logger.error("Error playing sound, type: {}: {}", soundType, e.getMessage());
             return false;
+        }
+    }
+
+    /**
+     * Deep diagnostic for FPSPLIT library issues
+     * This helps identify the root cause of FPSPLIT initialization failures
+     */
+    public Map<String, Object> deepDiagnoseFpSplitIssues() {
+        try {
+            logger.info("Starting deep FPSPLIT diagnostic...");
+
+            Map<String, Object> diagnostic = new HashMap<>();
+            List<String> issues = new ArrayList<>();
+            List<String> recommendations = new ArrayList<>();
+
+            // Check platform compatibility
+            if (!isWindows) {
+                issues.add("Platform not supported. This SDK requires Windows.");
+                recommendations.add("Run this application on a Windows system with the fingerprint device connected.");
+                diagnostic.put("platform_check", Map.of(
+                        "os_name", System.getProperty("os.name"),
+                        "is_windows", isWindows,
+                        "is_linux", isLinux,
+                        "status", "FAILED"
+                ));
+            } else {
+                diagnostic.put("platform_check", Map.of(
+                        "os_name", System.getProperty("os.name"),
+                        "is_windows", isWindows,
+                        "is_linux", isLinux,
+                        "status", "PASSED"
+                ));
+            }
+
+            // Check if device can be initialized
+            boolean deviceCanInit = false;
+            try {
+                logger.info("Testing device initialization...");
+                int deviceRet = ID_FprCapLoad.ID_FprCapinterface.instance.LIVESCAN_Init();
+                if (deviceRet == 1) {
+                    deviceCanInit = true;
+                    logger.info("Device initialization successful");
+
+                    // Get device information
+                    try {
+                        int channelCount = ID_FprCapLoad.ID_FprCapinterface.instance.LIVESCAN_GetChannelCount();
+
+                        int[] width = new int[1];
+                        int[] height = new int[1];
+                        ID_FprCapLoad.ID_FprCapinterface.instance.LIVESCAN_GetMaxImageSize(0, width, height);
+
+                        String version = ID_FprCapLoad.ID_FprCapinterface.instance.LIVESCAN_GetVersion() + "";
+
+                        byte[] desc = new byte[1024];
+                        ID_FprCapLoad.ID_FprCapinterface.instance.LIVESCAN_GetDesc(desc);
+                        String description = new String(desc).trim();
+
+                        diagnostic.put("device_info", Map.of(
+                                "channel_count", channelCount,
+                                "max_width", width[0],
+                                "max_height", height[0],
+                                "version", version,
+                                "description", description,
+                                "status", "CONNECTED"
+                        ));
+
+                        // Test FPSPLIT with device's maximum dimensions
+                        logger.info("Testing FPSPLIT with device's maximum dimensions: {}x{}", width[0], height[0]);
+                        int fpsplitRet = FpSplitLoad.instance.FPSPLIT_Init(width[0], height[0], 1);
+
+                        diagnostic.put("fpsplit_test_max_dims", Map.of(
+                                "dimensions", width[0] + "x" + height[0],
+                                "return_code", fpsplitRet,
+                                "success", fpsplitRet == 1,
+                                "status", fpsplitRet == 1 ? "SUCCESS" : "FAILED"
+                        ));
+
+                        if (fpsplitRet == 1) {
+                            FpSplitLoad.instance.FPSPLIT_Uninit();
+                            logger.info("FPSPLIT works with device's maximum dimensions!");
+                        } else {
+                            issues.add("FPSPLIT failed with device's maximum dimensions (return code: " + fpsplitRet + ")");
+
+                            // Try smaller dimensions
+                            int[][] testDims = {{800, 600}, {640, 480}, {400, 300}, {320, 240}};
+                            for (int[] dims : testDims) {
+                                int testRet = FpSplitLoad.instance.FPSPLIT_Init(dims[0], dims[1], 1);
+                                if (testRet == 1) {
+                                    logger.info("FPSPLIT works with dimensions: {}x{}", dims[0], dims[1]);
+                                    diagnostic.put("fpsplit_working_dims", dims[0] + "x" + dims[1]);
+                                    break;
+                                }
+                            }
+                        }
+
+                    } catch (Exception e) {
+                        issues.add("Error getting device information: " + e.getMessage());
+                        logger.error("Error getting device info: {}", e.getMessage());
+                    }
+
+                    // Clean up device
+                    ID_FprCapLoad.ID_FprCapinterface.instance.LIVESCAN_Close();
+
+                } else {
+                    issues.add("Device initialization failed with return code: " + deviceRet);
+                    recommendations.add("Check if fingerprint device is connected and drivers are installed");
+                    diagnostic.put("device_info", Map.of(
+                            "return_code", deviceRet,
+                            "status", "FAILED"
+                    ));
+                }
+            } catch (Exception e) {
+                issues.add("Device initialization exception: " + e.getMessage());
+                recommendations.add("Check if fingerprint device drivers are properly installed");
+                diagnostic.put("device_info", Map.of(
+                        "exception", e.getMessage(),
+                        "status", "ERROR"
+                ));
+            }
+
+            // Check DLL file availability
+            try {
+                // Try to load the FPSPLIT library directly
+                FpSplitLoad testLoad = FpSplitLoad.instance;
+                diagnostic.put("dll_loading", Map.of(
+                        "fpsplit_dll", "LOADED",
+                        "status", "SUCCESS"
+                ));
+            } catch (Exception e) {
+                issues.add("FPSPLIT DLL loading failed: " + e.getMessage());
+                recommendations.add("Ensure FpSplit.dll is in the classpath and accessible");
+                diagnostic.put("dll_loading", Map.of(
+                        "exception", e.getMessage(),
+                        "status", "FAILED"
+                ));
+            }
+
+            // Generate recommendations
+            if (issues.isEmpty()) {
+                recommendations.add("All checks passed. FPSPLIT should work correctly.");
+            } else {
+                if (issues.stream().anyMatch(issue -> issue.contains("Platform not supported"))) {
+                    recommendations.add("Run on Windows system");
+                }
+                if (issues.stream().anyMatch(issue -> issue.contains("Device initialization"))) {
+                    recommendations.add("Connect fingerprint device and install drivers");
+                }
+                if (issues.stream().anyMatch(issue -> issue.contains("DLL loading"))) {
+                    recommendations.add("Check DLL file locations and permissions");
+                }
+                if (issues.stream().anyMatch(issue -> issue.contains("FPSPLIT failed"))) {
+                    recommendations.add("Try different dimensions or check hardware compatibility");
+                }
+            }
+
+            diagnostic.put("issues_found", issues);
+            diagnostic.put("recommendations", recommendations);
+            diagnostic.put("overall_status", issues.isEmpty() ? "HEALTHY" : "ISSUES_DETECTED");
+
+            return Map.of(
+                    "success", true,
+                    "diagnostic", diagnostic,
+                    "summary", issues.isEmpty() ?
+                            "All systems operational. FPSPLIT should work correctly." :
+                            "Issues detected: " + String.join(", ", issues)
+            );
+
+        } catch (Exception e) {
+            logger.error("Error during FPSPLIT diagnostic: {}", e.getMessage(), e);
+            return Map.of(
+                    "success", false,
+                    "error_details", "Error during diagnostic: " + e.getMessage()
+            );
         }
     }
 

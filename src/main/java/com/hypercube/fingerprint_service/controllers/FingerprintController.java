@@ -352,6 +352,40 @@ public class FingerprintController {
     }
 
     /**
+     * Manual Split Two Thumbs - Extract left and right thumb fingerprints using manual image processing
+     * This is a fallback solution when FPSPLIT library is not working
+     */
+    @PostMapping("/split/thumbs/manual")
+    public ResponseEntity<Map<String, Object>> splitTwoThumbsManual(
+            @RequestParam(defaultValue = "0") int channel,
+            @RequestParam(defaultValue = "1600") int width,
+            @RequestParam(defaultValue = "1500") int height,
+            @RequestParam(defaultValue = "300") int splitWidth,
+            @RequestParam(defaultValue = "400") int splitHeight) {
+
+        try {
+            // Check platform compatibility first
+            if (!deviceService.isPlatformSupported()) {
+                return ResponseEntity.status(400).body(Map.of(
+                        "success", false,
+                        "message", "Platform not supported. This SDK requires Windows.",
+                        "platform_info", deviceService.getPlatformInfo(),
+                        "timestamp", System.currentTimeMillis()
+                ));
+            }
+
+            Map<String, Object> result = deviceService.splitTwoThumbsManual(channel, width, height, splitWidth, splitHeight);
+            return ResponseEntity.ok(result);
+        } catch (Exception e) {
+            logger.error("Error in manual thumb splitting for channel {}: {}", channel, e.getMessage(), e);
+            return ResponseEntity.status(500).body(Map.of(
+                    "success", false,
+                    "error_details", "Error in manual thumb splitting: " + e.getMessage()
+            ));
+        }
+    }
+
+    /**
      * Split Two Thumbs - Extract left and right thumb fingerprints from a single image
      * This endpoint captures an image containing both thumbs and automatically splits them
      */
