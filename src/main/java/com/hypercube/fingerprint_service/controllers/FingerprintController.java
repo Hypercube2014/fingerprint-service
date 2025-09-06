@@ -492,4 +492,67 @@ public class FingerprintController {
             ));
         }
     }
+
+    /**
+     * Play sound feedback
+     * @param soundType 1 = single beep (success), 2 = double beep (two-thumb mode), 3 = error beep
+     */
+    @PostMapping("/sound")
+    public ResponseEntity<Map<String, Object>> playSound(
+            @RequestParam(defaultValue = "1") int soundType) {
+
+        try {
+            // Check platform compatibility first
+            if (!deviceService.isPlatformSupported()) {
+                return ResponseEntity.status(400).body(Map.of(
+                        "success", false,
+                        "message", "Platform not supported. This SDK requires Windows.",
+                        "platform_info", deviceService.getPlatformInfo(),
+                        "timestamp", System.currentTimeMillis()
+                ));
+            }
+
+            boolean success = deviceService.playSound(soundType);
+
+            if (success) {
+                return ResponseEntity.ok(Map.of(
+                        "success", true,
+                        "message", "Sound played successfully",
+                        "sound_type", soundType,
+                        "sound_description", getSoundDescription(soundType),
+                        "platform_info", deviceService.getPlatformInfo(),
+                        "timestamp", System.currentTimeMillis()
+                ));
+            } else {
+                return ResponseEntity.status(500).body(Map.of(
+                        "success", false,
+                        "message", "Failed to play sound",
+                        "sound_type", soundType,
+                        "platform_info", deviceService.getPlatformInfo(),
+                        "timestamp", System.currentTimeMillis()
+                ));
+            }
+        } catch (Exception e) {
+            logger.error("Error playing sound, type {}: {}", soundType, e.getMessage(), e);
+            return ResponseEntity.status(500).body(Map.of(
+                    "success", false,
+                    "message", "Error playing sound: " + e.getMessage(),
+                    "sound_type", soundType,
+                    "platform_info", deviceService.getPlatformInfo(),
+                    "timestamp", System.currentTimeMillis()
+            ));
+        }
+    }
+
+    /**
+     * Get sound description for sound type
+     */
+    private String getSoundDescription(int soundType) {
+        switch (soundType) {
+            case 1: return "Single beep (success)";
+            case 2: return "Double beep (two-thumb mode)";
+            case 3: return "Error beep";
+            default: return "Unknown sound type";
+        }
+    }
 }

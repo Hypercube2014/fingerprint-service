@@ -311,6 +311,7 @@ public class FingerprintDeviceService {
     /**
      * Split two thumbs from a single captured image
      * This method captures an image and automatically splits it into left and right thumb images
+     * Following the exact sequence from the demo application for proper hardware interaction
      */
     public Map<String, Object> splitTwoThumbs(int channel, int width, int height, int splitWidth, int splitHeight) {
         try {
@@ -326,22 +327,21 @@ public class FingerprintDeviceService {
                 );
             }
 
-            // Ensure device is initialized first (following demo app pattern)
-            if (!isDeviceInitialized(channel)) {
-                logger.info("Device not initialized for channel {}, attempting to initialize", channel);
-                boolean initSuccess = initializeDevice(channel);
-                if (!initSuccess) {
-                    return Map.of(
-                            "success", false,
-                            "error_details", "Failed to initialize device for channel: " + channel
-                    );
-                }
-                logger.info("Device initialized successfully for channel: {}", channel);
+            // CRITICAL: Follow demo app sequence exactly
+            // Step 1: Initialize device first (like demo app case 0)
+            logger.info("Step 1: Initializing fingerprint device (following demo app sequence)");
+            int deviceRet = ID_FprCapLoad.ID_FprCapinterface.instance.LIVESCAN_Init();
+            if (deviceRet != 1) {
+                logger.error("Device initialization failed with return code: {}", deviceRet);
+                return Map.of(
+                        "success", false,
+                        "error_details", "Device initialization failed with return code: " + deviceRet
+                );
             }
+            logger.info("Device initialized successfully");
 
-            // Initialize the FPSPLIT library FIRST (before capture)
-            // This allows the library to communicate with hardware and show green indicators
-            logger.info("Initializing FPSPLIT library with dimensions: {}x{}", width, height);
+            // Step 2: Initialize FPSPLIT library (this triggers green thumb indicators)
+            logger.info("Step 2: Initializing FPSPLIT library with dimensions: {}x{} (this should show green thumb indicators)", width, height);
             int ret = FpSplitLoad.instance.FPSPLIT_Init(width, height, 1);
             if (ret != 1) {
                 logger.error("Failed to initialize FPSPLIT library for thumb splitting. Return code: {}", ret);
@@ -387,8 +387,22 @@ public class FingerprintDeviceService {
 
             logger.info("FPSPLIT library initialized successfully with dimensions: {}x{}. Hardware should now show green thumb indicators.", width, height);
 
+            // Step 3: Play sound to indicate two-thumb mode is ready (like demo app)
             try {
-                // Now capture the fingerprint image (after FPSPLIT is initialized)
+                logger.info("Step 3: Playing two-thumb selection sound");
+                int beepRet = ID_FprCapLoad.ID_FprCapinterface.instance.LIVESCAN_Beep(2); // 2 beeps for two thumbs
+                if (beepRet == 1) {
+                    logger.info("Two-thumb selection sound played successfully");
+                } else {
+                    logger.warn("Failed to play two-thumb selection sound, return code: {}", beepRet);
+                }
+            } catch (Exception e) {
+                logger.warn("Error playing two-thumb selection sound: {}", e.getMessage());
+            }
+
+            try {
+                // Step 4: Capture the fingerprint image (after FPSPLIT is initialized and green indicators are shown)
+                logger.info("Step 4: Capturing fingerprint image with green thumb indicators active");
                 Map<String, Object> captureResult = captureFingerprint(channel, width, height);
                 if (!(Boolean) captureResult.get("success")) {
                     return Map.of(
@@ -401,19 +415,19 @@ public class FingerprintDeviceService {
                 String base64Image = (String) captureResult.get("image");
                 byte[] rawData = Base64.getDecoder().decode(base64Image);
 
-                // Prepare output buffer for split results
-                // We expect 2 thumbs, so we'll prepare space for them
+                // Step 5: Prepare output buffer for split results (like demo app case 2)
+                logger.info("Step 5: Preparing split buffers and performing FPSPLIT_DoSplit");
                 int size = 28; // Size of FPSPLIT_INFO structure
                 Pointer infosPtr = new Memory(size * 2); // Space for 2 thumbs
 
-                // Prepare memory for each thumb's output buffer
+                // Prepare memory for each thumb's output buffer (following demo app pattern)
                 for (int i = 0; i < 2; i++) {
                     Pointer ptr = infosPtr.share(i * size + 24);
                     Pointer p = new Memory(splitWidth * splitHeight);
                     ptr.setPointer(0, p);
                 }
 
-                // Perform the splitting
+                // Perform the splitting (like demo app case 2)
                 int fpNum = 0;
                 ret = FpSplitLoad.instance.FPSPLIT_DoSplit(
                         rawData, width, height, 1, splitWidth, splitHeight, fpNum, infosPtr
@@ -429,7 +443,7 @@ public class FingerprintDeviceService {
 
                 logger.info("FPSPLIT splitting completed successfully. Processing results...");
 
-                // Process the split results and store individual thumb images
+                // Step 6: Process the split results and store individual thumb images
                 List<Map<String, Object>> thumbs = new ArrayList<>();
 
                 // Extract left thumb (position 0)
@@ -442,6 +456,19 @@ public class FingerprintDeviceService {
                 Map<String, Object> rightThumb = processSplitThumb(infosPtr, 1, "right_thumb", splitWidth, splitHeight);
                 if (rightThumb != null) {
                     thumbs.add(rightThumb);
+                }
+
+                // Step 7: Play success sound
+                try {
+                    logger.info("Step 7: Playing success sound");
+                    int successBeepRet = ID_FprCapLoad.ID_FprCapinterface.instance.LIVESCAN_Beep(1); // 1 beep for success
+                    if (successBeepRet == 1) {
+                        logger.info("Success sound played successfully");
+                    } else {
+                        logger.warn("Failed to play success sound, return code: {}", successBeepRet);
+                    }
+                } catch (Exception e) {
+                    logger.warn("Error playing success sound: {}", e.getMessage());
                 }
 
                 logger.info("Successfully split {} thumbs for channel: {}", thumbs.size(), channel);
@@ -457,12 +484,14 @@ public class FingerprintDeviceService {
                 successResponse.put("original_height", height);
                 successResponse.put("channel", channel);
                 successResponse.put("captured_at", new Date());
-                successResponse.put("note", "FPSPLIT library initialized successfully with dimensions: " + width + "x" + height);
+                successResponse.put("note", "FPSPLIT library initialized successfully with dimensions: " + width + "x" + height + ". Green thumb indicators should have been shown during capture.");
+                successResponse.put("sequence_followed", "Demo app sequence: Device Init -> FPSPLIT Init -> Sound -> Capture -> Split -> Success Sound");
 
                 return successResponse;
 
             } finally {
-                // Always cleanup the FPSPLIT library
+                // Always cleanup the FPSPLIT library (like demo app case 1)
+                logger.info("Cleaning up FPSPLIT library");
                 FpSplitLoad.instance.FPSPLIT_Uninit();
                 logger.info("FPSPLIT library uninitialized successfully");
             }
@@ -520,6 +549,31 @@ public class FingerprintDeviceService {
         } catch (Exception e) {
             logger.error("Error processing thumb {}: {}", thumbName, e.getMessage());
             return null;
+        }
+    }
+
+    /**
+     * Play sound feedback for different operations
+     * @param soundType 1 = single beep (success), 2 = double beep (two-thumb mode), 3 = error beep
+     */
+    public boolean playSound(int soundType) {
+        try {
+            if (!isWindows) {
+                logger.warn("Sound not supported on non-Windows platforms");
+                return false;
+            }
+
+            int ret = ID_FprCapLoad.ID_FprCapinterface.instance.LIVESCAN_Beep(soundType);
+            if (ret == 1) {
+                logger.info("Sound played successfully, type: {}", soundType);
+                return true;
+            } else {
+                logger.warn("Failed to play sound, type: {}, return code: {}", soundType, ret);
+                return false;
+            }
+        } catch (Exception e) {
+            logger.error("Error playing sound, type: {}: {}", soundType, e.getMessage());
+            return false;
         }
     }
 
