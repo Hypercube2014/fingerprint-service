@@ -412,6 +412,34 @@ public class FingerprintController {
     }
 
     /**
+     * Comprehensive diagnostic for FPSPLIT library issues
+     * This helps identify the root cause of FPSPLIT initialization failures
+     */
+    @GetMapping("/diagnose/fpsplit")
+    public ResponseEntity<Map<String, Object>> diagnoseFpSplitIssues() {
+        try {
+            // Check platform compatibility first
+            if (!deviceService.isPlatformSupported()) {
+                return ResponseEntity.status(400).body(Map.of(
+                        "success", false,
+                        "message", "Platform not supported. This SDK requires Windows.",
+                        "platform_info", deviceService.getPlatformInfo(),
+                        "timestamp", System.currentTimeMillis()
+                ));
+            }
+
+            Map<String, Object> result = deviceService.diagnoseFpSplitIssues();
+            return ResponseEntity.ok(result);
+        } catch (Exception e) {
+            logger.error("Error during FPSPLIT diagnostic: {}", e.getMessage(), e);
+            return ResponseEntity.status(500).body(Map.of(
+                    "success", false,
+                    "error_details", "Error during FPSPLIT diagnostic: " + e.getMessage()
+            ));
+        }
+    }
+
+    /**
      * Test FPSPLIT library initialization with different dimensions
      * This helps debug FPSPLIT initialization issues
      */
