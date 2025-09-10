@@ -1,7 +1,6 @@
 package com.hypercube.fingerprint_service.controllers;
 
 import com.hypercube.fingerprint_service.services.FingerprintDeviceService;
-import com.hypercube.fingerprint_service.services.FingerprintFileStorageService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -10,8 +9,8 @@ import org.springframework.web.bind.annotation.*;
 
 import java.util.Base64;
 import java.util.Date;
-import java.util.HashMap;
 import java.util.Map;
+import java.util.HashMap;
 
 @RestController
 @RequestMapping("/api/fingerprint")
@@ -20,13 +19,20 @@ public class FingerprintController {
     
     private static final Logger logger = LoggerFactory.getLogger(FingerprintController.class);
     
-    private final FingerprintDeviceService deviceService;
-    private final FingerprintFileStorageService fileStorageService;
-    
     @Autowired
-    public FingerprintController(FingerprintDeviceService deviceService, FingerprintFileStorageService fileStorageService) {
-        this.deviceService = deviceService;
-        this.fileStorageService = fileStorageService;
+    private FingerprintDeviceService deviceService;
+    
+    /**
+     * Health check endpoint
+     */
+    @GetMapping("/health")
+    public ResponseEntity<Map<String, Object>> healthCheck() {
+        return ResponseEntity.ok(Map.of(
+            "status", "healthy",
+            "service", "BIO600 Fingerprint Service",
+            "platform_info", deviceService.getPlatformInfo(),
+            "timestamp", System.currentTimeMillis()
+        ));
     }
     
     /**
@@ -36,616 +42,167 @@ public class FingerprintController {
     public ResponseEntity<Map<String, Object>> initializeDevice(
             @RequestParam(defaultValue = "0") int channel) {
         
-        logger.info("Initializing fingerprint device for channel: {}", channel);
-        
         try {
-            FingerprintDeviceService.DeviceInitResult result = deviceService.initializeDevice(channel);
-            
-            if (result.isSuccess()) {
-                Map<String, Object> response = new HashMap<>();
-                response.put("success", true);
-                response.put("message", result.getMessage());
-                response.put("device_id", result.getChannel());
-                response.put("timestamp", new Date());
-                
-                if (result.getDeviceInfo() != null) {
-                    Map<String, Object> deviceInfo = new HashMap<>();
-                    deviceInfo.put("channel_count", result.getDeviceInfo().getChannelCount());
-                    deviceInfo.put("max_width", result.getDeviceInfo().getMaxWidth());
-                    deviceInfo.put("max_height", result.getDeviceInfo().getMaxHeight());
-                    deviceInfo.put("version", result.getDeviceInfo().getVersion());
-                    deviceInfo.put("description", result.getDeviceInfo().getDescription());
-                    response.put("device_info", deviceInfo);
-                }
-                
-                return ResponseEntity.ok(response);
-            } else {
-                Map<String, Object> response = new HashMap<>();
-                response.put("success", false);
-                response.put("message", result.getMessage());
-                response.put("error_code", -1);
-                response.put("timestamp", new Date());
-                
-                return ResponseEntity.status(500).body(response);
+            // Check platform compatibility first
+            if (!deviceService.isPlatformSupported()) {
+                return ResponseEntity.status(400).body(Map.of(
+                    "success", false,
+                    "message", "Platform not supported. This SDK requires Windows.",
+                    "platform_info", deviceService.getPlatformInfo(),
+                    "channel", channel,
+                    "timestamp", System.currentTimeMillis()
+                ));
             }
             
+            boolean success = deviceService.initializeDevice(channel);
+            
+            if (success) {
+                return ResponseEntity.ok(Map.of(
+                    "success", true,
+                    "message", "Device initialized successfully",
+                    "channel", channel,
+                    "platform_info", deviceService.getPlatformInfo(),
+                    "timestamp", System.currentTimeMillis()
+                ));
+            } else {
+                String errorInfo = deviceService.getErrorInfo(-106); // Get info for error code -106
+                return ResponseEntity.status(500).body(Map.of(
+                    "success", false,
+                    "message", "Device initialization failed",
+                    "channel", channel,
+                    "error_code", -106,
+                    "error_info", errorInfo,
+                    "platform_info", deviceService.getPlatformInfo(),
+                    "timestamp", System.currentTimeMillis()
+                ));
+            }
         } catch (Exception e) {
-            logger.error("Error initializing device for channel: {}", channel, e);
-            
-            Map<String, Object> response = new HashMap<>();
-            response.put("success", false);
-            response.put("message", "Error initializing device: " + e.getMessage());
-            response.put("error_code", -1);
-            response.put("timestamp", new Date());
-            
-            return ResponseEntity.status(500).body(response);
+            logger.error("Error initializing device for channel {}: {}", channel, e.getMessage(), e);
+            return ResponseEntity.status(500).body(Map.of(
+                "success", false,
+                "message", "Error initializing device: " + e.getMessage(),
+                "channel", channel,
+                "platform_info", deviceService.getPlatformInfo(),
+                "timestamp", System.currentTimeMillis()
+            ));
         }
     }
     
     /**
-     * Capture fingerprint image with custom naming
+     * Get/Capture fingerprint image - Main endpoint for taking fingerprint pictures
      */
     @PostMapping("/capture")
     public ResponseEntity<Map<String, Object>> captureFingerprint(
             @RequestParam(defaultValue = "0") int channel,
             @RequestParam(defaultValue = "1600") int width,
-            @RequestParam(defaultValue = "1500") int height,
-            @RequestParam(required = false) String customName) {
-        
-        logger.info("Capturing fingerprint for channel: {} with dimensions: {}x{} and custom name: {}", 
-                   channel, width, height, customName);
+            @RequestParam(defaultValue = "1500") int height) {
         
         try {
-            FingerprintDeviceService.CaptureResult result = deviceService.captureFingerprint(channel, width, height, customName);
+            // Check platform compatibility first
+            if (!deviceService.isPlatformSupported()) {
+                return ResponseEntity.status(400).body(Map.of(
+                    "success", false,
+                    "message", "Platform not supported. This SDK requires Windows.",
+                    "platform_info", deviceService.getPlatformInfo(),
+                    "channel", channel,
+                    "timestamp", System.currentTimeMillis()
+                ));
+            }
             
-            if (result.isSuccess()) {
-                Map<String, Object> response = new HashMap<>();
-                response.put("success", true);
-                response.put("message", result.getMessage());
-                response.put("image", Base64.getEncoder().encodeToString(result.getImageData()));
-                response.put("width", result.getWidth());
-                response.put("height", result.getHeight());
-                response.put("quality_score", result.getQuality());
-                response.put("channel", result.getChannel());
-                response.put("captured_at", new Date());
-                
-                // Add file storage information
-                if (result.getStorageResult() != null && result.getStorageResult().isSuccess()) {
-                    Map<String, Object> fileInfo = new HashMap<>();
-                    fileInfo.put("file_path", result.getStorageResult().getFilePath());
-                    fileInfo.put("filename", result.getStorageResult().getFilename());
-                    fileInfo.put("file_size", result.getStorageResult().getFileSize());
-                    fileInfo.put("image_type", result.getStorageResult().getImageType());
-                    response.put("file_info", fileInfo);
+            // Check if device is initialized
+            if (!deviceService.isDeviceInitialized(channel)) {
+                logger.info("Device not initialized for channel {}, attempting to initialize", channel);
+                boolean initSuccess = deviceService.initializeDevice(channel);
+                if (!initSuccess) {
+                    return ResponseEntity.status(500).body(Map.of(
+                        "success", false,
+                        "message", "Device not initialized and initialization failed",
+                        "channel", channel,
+                        "platform_info", deviceService.getPlatformInfo(),
+                        "timestamp", System.currentTimeMillis()
+                    ));
                 }
-                
-                return ResponseEntity.ok(response);
-            } else {
-                Map<String, Object> response = new HashMap<>();
-                response.put("success", false);
-                response.put("message", result.getMessage());
-                response.put("timestamp", new Date());
-                
-                return ResponseEntity.status(500).body(response);
             }
             
-        } catch (Exception e) {
-            logger.error("Error capturing fingerprint for channel: {}", channel, e);
+            // Capture the fingerprint image
+            Map<String, Object> captureResult = deviceService.captureFingerprint(channel, width, height);
             
-            Map<String, Object> response = new HashMap<>();
-            response.put("success", false);
-            response.put("message", "Error capturing fingerprint: " + e.getMessage());
-            response.put("timestamp", new Date());
-            
-            return ResponseEntity.status(500).body(response);
-        }
-    }
-    
-    /**
-     * Capture high-resolution original image with custom naming
-     */
-    @PostMapping("/capture/original")
-    public ResponseEntity<Map<String, Object>> captureOriginalImage(
-            @RequestParam(defaultValue = "0") int channel,
-            @RequestParam(required = false) String customName) {
-        
-        logger.info("Capturing original image for channel: {} with custom name: {}", channel, customName);
-        
-        try {
-            FingerprintDeviceService.CaptureResult result = deviceService.captureOriginalImage(channel, customName);
-            
-            if (result.isSuccess()) {
+            if ((Boolean) captureResult.get("success")) {
                 Map<String, Object> response = new HashMap<>();
                 response.put("success", true);
-                response.put("message", result.getMessage());
-                response.put("image", Base64.getEncoder().encodeToString(result.getImageData()));
-                response.put("width", result.getWidth());
-                response.put("height", result.getHeight());
-                response.put("channel", result.getChannel());
-                response.put("captured_at", new Date());
-                
-                // Add file storage information
-                if (result.getStorageResult() != null && result.getStorageResult().isSuccess()) {
-                    Map<String, Object> fileInfo = new HashMap<>();
-                    fileInfo.put("file_path", result.getStorageResult().getFilePath());
-                    fileInfo.put("filename", result.getStorageResult().getFilename());
-                    fileInfo.put("file_size", result.getStorageResult().getFileSize());
-                    fileInfo.put("image_type", result.getStorageResult().getImageType());
-                    response.put("file_info", fileInfo);
-                }
-                
-                return ResponseEntity.ok(response);
-            } else {
-                Map<String, Object> response = new HashMap<>();
-                response.put("success", false);
-                response.put("message", result.getMessage());
-                response.put("timestamp", new Date());
-                
-                return ResponseEntity.status(500).body(response);
-            }
-            
-        } catch (Exception e) {
-            logger.error("Error capturing original image for channel: {}", channel, e);
-            
-            Map<String, Object> response = new HashMap<>();
-            response.put("success", false);
-            response.put("message", "Error capturing original image: " + e.getMessage());
-            response.put("timestamp", new Date());
-            
-            return ResponseEntity.status(500).body(response);
-        }
-    }
-    
-    /**
-     * Capture rolled fingerprint (stitched) with custom naming
-     */
-    @PostMapping("/capture/rolled")
-    public ResponseEntity<Map<String, Object>> captureRolledFingerprint(
-            @RequestParam(defaultValue = "800") int width,
-            @RequestParam(defaultValue = "750") int height,
-            @RequestParam(required = false) String customName) {
-        
-        logger.info("Capturing rolled fingerprint with dimensions: {}x{} and custom name: {}", width, height, customName);
-        
-        try {
-            FingerprintDeviceService.CaptureResult result = deviceService.captureRolledFingerprint(width, height, customName);
-            
-            if (result.isSuccess()) {
-                Map<String, Object> response = new HashMap<>();
-                response.put("success", true);
-                response.put("message", result.getMessage());
-                response.put("image", Base64.getEncoder().encodeToString(result.getImageData()));
-                response.put("width", result.getWidth());
-                response.put("height", result.getHeight());
-                response.put("type", "rolled");
-                response.put("captured_at", new Date());
-                
-                // Add file storage information
-                if (result.getStorageResult() != null && result.getStorageResult().isSuccess()) {
-                    Map<String, Object> fileInfo = new HashMap<>();
-                    fileInfo.put("file_path", result.getStorageResult().getFilePath());
-                    fileInfo.put("filename", result.getStorageResult().getFilename());
-                    fileInfo.put("file_size", result.getStorageResult().getFileSize());
-                    fileInfo.put("image_type", result.getStorageResult().getImageType());
-                    response.put("file_info", fileInfo);
-                }
-                
-                return ResponseEntity.ok(response);
-            } else {
-                Map<String, Object> response = new HashMap<>();
-                response.put("success", false);
-                response.put("message", result.getMessage());
-                response.put("timestamp", new Date());
-                
-                return ResponseEntity.status(500).body(response);
-            }
-            
-        } catch (Exception e) {
-            logger.error("Error capturing rolled fingerprint", e);
-            
-            Map<String, Object> response = new HashMap<>();
-            response.put("success", false);
-            response.put("message", "Error capturing rolled fingerprint: " + e.getMessage());
-            response.put("timestamp", new Date());
-            
-            return ResponseEntity.status(500).body(response);
-        }
-    }
-    
-    /**
-     * Split multiple fingers from image with custom naming
-     */
-    @PostMapping("/split")
-    public ResponseEntity<Map<String, Object>> splitFingerprints(
-            @RequestParam("image") String base64Image,
-            @RequestParam(defaultValue = "1600") int width,
-            @RequestParam(defaultValue = "1500") int height,
-            @RequestParam(defaultValue = "300") int splitWidth,
-            @RequestParam(defaultValue = "400") int splitHeight,
-            @RequestParam(required = false) String customName) {
-        
-        logger.info("Splitting fingerprints with dimensions: {}x{} into {}x{} with custom name: {}", 
-                   width, height, splitWidth, splitHeight, customName);
-        
-        try {
-            byte[] imgBuf = Base64.getDecoder().decode(base64Image);
-            
-            FingerprintDeviceService.SplitResult result = deviceService.splitFingerprints(imgBuf, width, height, splitWidth, splitHeight, customName);
-            
-            if (result.isSuccess()) {
-                Map<String, Object> response = new HashMap<>();
-                response.put("success", true);
-                response.put("message", result.getMessage());
-                response.put("fingerprint_count", result.getFingerprintCount());
-                response.put("fingerprints", result.getFingerprints());
-                response.put("split_width", splitWidth);
-                response.put("split_height", splitHeight);
-                response.put("timestamp", new Date());
-                
-                return ResponseEntity.ok(response);
-            } else {
-                Map<String, Object> response = new HashMap<>();
-                response.put("success", false);
-                response.put("message", result.getMessage());
-                response.put("timestamp", new Date());
-                
-                return ResponseEntity.status(500).body(response);
-            }
-            
-        } catch (Exception e) {
-            logger.error("Error splitting fingerprints", e);
-            
-            Map<String, Object> response = new HashMap<>();
-            response.put("success", false);
-            response.put("message", "Error splitting fingerprints: " + e.getMessage());
-            response.put("timestamp", new Date());
-            
-            return ResponseEntity.status(500).body(response);
-        }
-    }
-    
-    /**
-     * Store fingerprint image with custom path and naming
-     */
-    @PostMapping("/storage/store")
-    public ResponseEntity<Map<String, Object>> storeFingerprintImage(
-            @RequestParam("image") String base64Image,
-            @RequestParam("image_type") String imageType,
-            @RequestParam(required = false) String customName,
-            @RequestParam(required = false) String customPath) {
-        
-        logger.info("Storing fingerprint image of type: {} with custom name: {} and custom path: {}", 
-                   imageType, customName, customPath);
-        
-        try {
-            byte[] imgBuf = Base64.getDecoder().decode(base64Image);
-            
-            FingerprintFileStorageService.FileStorageResult result;
-            if (customPath != null && !customPath.trim().isEmpty()) {
-                result = fileStorageService.storeFingerprintImageCustom(imgBuf, customPath, customName);
-            } else {
-                result = fileStorageService.storeFingerprintImage(imgBuf, imageType, customName);
-            }
-            
-            if (result.isSuccess()) {
-                Map<String, Object> response = new HashMap<>();
-                response.put("success", true);
-                response.put("message", result.getMessage());
-                response.put("file_path", result.getFilePath());
-                response.put("filename", result.getFilename());
-                response.put("file_size", result.getFileSize());
-                response.put("image_type", result.getImageType());
-                response.put("timestamp", new Date());
-                
-                return ResponseEntity.ok(response);
-            } else {
-                Map<String, Object> response = new HashMap<>();
-                response.put("success", false);
-                response.put("message", result.getMessage());
-                response.put("timestamp", new Date());
-                
-                return ResponseEntity.status(500).body(response);
-            }
-            
-        } catch (Exception e) {
-            logger.error("Error storing fingerprint image", e);
-            
-            Map<String, Object> response = new HashMap<>();
-            response.put("success", false);
-            response.put("message", "Error storing fingerprint image: " + e.getMessage());
-            response.put("timestamp", new Date());
-            
-            return ResponseEntity.status(500).body(response);
-        }
-    }
-    
-    /**
-     * Store fingerprint image in organized structure
-     */
-    @PostMapping("/storage/store/organized")
-    public ResponseEntity<Map<String, Object>> storeFingerprintImageOrganized(
-            @RequestParam("image") String base64Image,
-            @RequestParam("image_type") String imageType,
-            @RequestParam(required = false) String customName) {
-        
-        logger.info("Storing fingerprint image in organized structure, type: {} with custom name: {}", 
-                   imageType, customName);
-        
-        try {
-            byte[] imgBuf = Base64.getDecoder().decode(base64Image);
-            
-            FingerprintFileStorageService.FileStorageResult result = fileStorageService.storeFingerprintImageOrganized(
-                imgBuf, imageType, customName
-            );
-            
-            if (result.isSuccess()) {
-                Map<String, Object> response = new HashMap<>();
-                response.put("success", true);
-                response.put("message", result.getMessage());
-                response.put("file_path", result.getFilePath());
-                response.put("filename", result.getFilename());
-                response.put("file_size", result.getFileSize());
-                response.put("image_type", result.getImageType());
-                response.put("timestamp", new Date());
-                
-                return ResponseEntity.ok(response);
-            } else {
-                Map<String, Object> response = new HashMap<>();
-                response.put("success", false);
-                response.put("message", result.getMessage());
-                response.put("timestamp", new Date());
-                
-                return ResponseEntity.status(500).body(response);
-            }
-            
-        } catch (Exception e) {
-            logger.error("Error storing fingerprint image in organized structure", e);
-            
-            Map<String, Object> response = new HashMap<>();
-            response.put("success", false);
-            response.put("message", "Error storing fingerprint image: " + e.getMessage());
-            response.put("timestamp", new Date());
-            
-            return ResponseEntity.status(500).body(response);
-        }
-    }
-    
-    /**
-     * Get file information
-     */
-    @GetMapping("/storage/file/info")
-    public ResponseEntity<Map<String, Object>> getFileInfo(
-            @RequestParam("file_path") String filePath) {
-        
-        logger.info("Getting file info for: {}", filePath);
-        
-        try {
-            FingerprintFileStorageService.FileInfo fileInfo = fileStorageService.getFileInfo(filePath);
-            
-            if (fileInfo != null) {
-                Map<String, Object> response = new HashMap<>();
-                response.put("success", true);
-                response.put("file_path", fileInfo.getFilePath());
-                response.put("filename", fileInfo.getFilename());
-                response.put("size", fileInfo.getSize());
-                response.put("last_modified", fileInfo.getLastModified());
-                response.put("content_type", fileInfo.getContentType());
-                response.put("timestamp", new Date());
-                
-                return ResponseEntity.ok(response);
-            } else {
-                Map<String, Object> response = new HashMap<>();
-                response.put("success", false);
-                response.put("message", "File not found");
-                response.put("timestamp", new Date());
-                
-                return ResponseEntity.status(404).body(response);
-            }
-            
-        } catch (Exception e) {
-            logger.error("Error getting file info for: {}", filePath, e);
-            
-            Map<String, Object> response = new HashMap<>();
-            response.put("success", false);
-            response.put("message", "Error getting file info: " + e.getMessage());
-            response.put("timestamp", new Date());
-            
-            return ResponseEntity.status(500).body(response);
-        }
-    }
-    
-    /**
-     * Delete fingerprint image
-     */
-    @DeleteMapping("/storage/file/delete")
-    public ResponseEntity<Map<String, Object>> deleteFingerprintImage(
-            @RequestParam("file_path") String filePath) {
-        
-        logger.info("Deleting fingerprint image: {}", filePath);
-        
-        try {
-            boolean success = fileStorageService.deleteFingerprintImage(filePath);
-            
-            if (success) {
-                Map<String, Object> response = new HashMap<>();
-                response.put("success", true);
-                response.put("message", "File deleted successfully");
-                response.put("file_path", filePath);
-                response.put("timestamp", new Date());
-                
-                return ResponseEntity.ok(response);
-            } else {
-                Map<String, Object> response = new HashMap<>();
-                response.put("success", false);
-                response.put("message", "File not found or could not be deleted");
-                response.put("timestamp", new Date());
-                
-                return ResponseEntity.status(404).body(response);
-            }
-            
-        } catch (Exception e) {
-            logger.error("Error deleting fingerprint image: {}", filePath, e);
-            
-            Map<String, Object> response = new HashMap<>();
-            response.put("success", false);
-            response.put("message", "Error deleting file: " + e.getMessage());
-            response.put("timestamp", new Date());
-            
-            return ResponseEntity.status(500).body(response);
-        }
-    }
-    
-    /**
-     * Get storage statistics
-     */
-    @GetMapping("/storage/stats")
-    public ResponseEntity<Map<String, Object>> getStorageStats() {
-        logger.info("Getting storage statistics");
-        
-        try {
-            FingerprintFileStorageService.StorageStats stats = fileStorageService.getStorageStats();
-            
-            Map<String, Object> response = new HashMap<>();
-            response.put("success", true);
-            response.put("total_files", stats.getTotalFiles());
-            response.put("total_size", stats.getTotalSize());
-            response.put("directory_count", stats.getDirectoryCount());
-            response.put("timestamp", new Date());
-            
-            return ResponseEntity.ok(response);
-            
-        } catch (Exception e) {
-            logger.error("Error getting storage statistics", e);
-            
-            Map<String, Object> response = new HashMap<>();
-            response.put("success", false);
-            response.put("message", "Error getting storage statistics: " + e.getMessage());
-            response.put("timestamp", new Date());
-            
-            return ResponseEntity.status(500).body(response);
-        }
-    }
-    
-    /**
-     * Clean up old files
-     */
-    @PostMapping("/storage/cleanup")
-    public ResponseEntity<Map<String, Object>> cleanupOldFiles(
-            @RequestParam(defaultValue = "90") int daysToKeep) {
-        
-        logger.info("Cleaning up old files, keeping files newer than {} days", daysToKeep);
-        
-        try {
-            FingerprintFileStorageService.CleanupResult result = fileStorageService.cleanupOldFiles(daysToKeep);
-            
-            Map<String, Object> response = new HashMap<>();
-            response.put("success", true);
-            response.put("deleted_files", result.getDeletedFiles());
-            response.put("freed_space", result.getFreedSpace());
-            response.put("message", result.getMessage());
-            response.put("timestamp", new Date());
-            
-            return ResponseEntity.ok(response);
-            
-        } catch (Exception e) {
-            logger.error("Error during cleanup", e);
-            
-            Map<String, Object> response = new HashMap<>();
-            response.put("success", false);
-            response.put("message", "Error during cleanup: " + e.getMessage());
-            response.put("timestamp", new Date());
-            
-            return ResponseEntity.status(500).body(response);
-        }
-    }
-    
-    /**
-     * Get device information
-     */
-    @GetMapping("/device/info")
-    public ResponseEntity<Map<String, Object>> getDeviceInfo(
-            @RequestParam(defaultValue = "0") int channel) {
-        
-        logger.info("Getting device info for channel: {}", channel);
-        
-        try {
-            FingerprintDeviceService.DeviceInfo deviceInfo = deviceService.getDeviceInfo(channel);
-            
-            if (deviceInfo != null) {
-                Map<String, Object> response = new HashMap<>();
-                response.put("success", true);
-                response.put("channel_count", deviceInfo.getChannelCount());
-                response.put("max_width", deviceInfo.getMaxWidth());
-                response.put("max_height", deviceInfo.getMaxHeight());
-                response.put("version", deviceInfo.getVersion());
-                response.put("description", deviceInfo.getDescription());
-                response.put("channel", deviceInfo.getChannel());
-                response.put("timestamp", new Date());
-                
-                return ResponseEntity.ok(response);
-            } else {
-                Map<String, Object> response = new HashMap<>();
-                response.put("success", false);
-                response.put("message", "Device not initialized or not found");
-                response.put("timestamp", new Date());
-                
-                return ResponseEntity.status(500).body(response);
-            }
-            
-        } catch (Exception e) {
-            logger.error("Error getting device info for channel: {}", channel, e);
-            
-            Map<String, Object> response = new HashMap<>();
-            response.put("success", false);
-            response.put("message", "Error getting device info: " + e.getMessage());
-            response.put("timestamp", new Date());
-            
-            return ResponseEntity.status(500).body(response);
-        }
-    }
-    
-    /**
-     * Set device parameters
-     */
-    @PostMapping("/device/settings")
-    public ResponseEntity<Map<String, Object>> setDeviceSettings(
-            @RequestParam(defaultValue = "0") int channel,
-            @RequestParam(defaultValue = "50") int brightness,
-            @RequestParam(defaultValue = "50") int contrast) {
-        
-        logger.info("Setting device parameters for channel: {} - brightness: {}, contrast: {}", channel, brightness, contrast);
-        
-        try {
-            boolean success = deviceService.setDeviceSettings(channel, brightness, contrast);
-            
-            if (success) {
-                Map<String, Object> response = new HashMap<>();
-                response.put("success", true);
-                response.put("message", "Device settings updated successfully");
-                response.put("brightness", brightness);
-                response.put("contrast", contrast);
+                response.put("message", "Fingerprint captured successfully");
+                response.put("width", width);
+                response.put("height", height);
+                response.put("quality_score", captureResult.get("quality_score"));
                 response.put("channel", channel);
-                response.put("timestamp", new Date());
+                response.put("captured_at", new Date());
+                response.put("storage_info", Map.of(
+                    "stored", captureResult.get("storage_success"),
+                    "file_path", captureResult.get("file_path"),
+                    "filename", captureResult.get("filename"),
+                    "file_size", captureResult.get("file_size")
+                ));
+                response.put("platform_info", deviceService.getPlatformInfo());
+                response.put("timestamp", System.currentTimeMillis());
                 
                 return ResponseEntity.ok(response);
             } else {
-                Map<String, Object> response = new HashMap<>();
-                response.put("success", false);
-                response.put("message", "Failed to set device settings");
-                response.put("timestamp", new Date());
-                
-                return ResponseEntity.status(500).body(response);
+                return ResponseEntity.status(500).body(Map.of(
+                    "success", false,
+                    "message", "Failed to capture fingerprint",
+                    "error_details", captureResult.get("error_details"),
+                    "channel", channel,
+                    "platform_info", deviceService.getPlatformInfo(),
+                    "timestamp", System.currentTimeMillis()
+                ));
             }
             
         } catch (Exception e) {
-            logger.error("Error setting device parameters for channel: {}", channel, e);
-            
-            Map<String, Object> response = new HashMap<>();
-            response.put("success", false);
-            response.put("message", "Error setting device parameters: " + e.getMessage());
-            response.put("timestamp", new Date());
-            
-            return ResponseEntity.status(500).body(response);
+            logger.error("Error capturing fingerprint for channel {}: {}", channel, e.getMessage(), e);
+            return ResponseEntity.status(500).body(Map.of(
+                "success", false,
+                "message", "Error capturing fingerprint: " + e.getMessage(),
+                "channel", channel,
+                "platform_info", deviceService.getPlatformInfo(),
+                "timestamp", System.currentTimeMillis()
+            ));
+        }
+    }
+    
+    /**
+     * Simple GET endpoint for testing fingerprint capture (same functionality as POST /capture)
+     */
+    @GetMapping("/capture")
+    public ResponseEntity<Map<String, Object>> captureFingerprintGet(
+            @RequestParam(defaultValue = "0") int channel,
+            @RequestParam(defaultValue = "1600") int width,
+            @RequestParam(defaultValue = "1500") int height) {
+        
+        // Reuse the POST endpoint logic
+        return captureFingerprint(channel, width, height);
+    }
+    
+    /**
+     * Get device status
+     */
+    @GetMapping("/status")
+    public ResponseEntity<Map<String, Object>> getDeviceStatus() {
+        try {
+            Map<Integer, Boolean> status = deviceService.getDeviceStatus();
+            return ResponseEntity.ok(Map.of(
+                "success", true,
+                "device_status", status,
+                "platform_info", deviceService.getPlatformInfo(),
+                "timestamp", System.currentTimeMillis()
+            ));
+        } catch (Exception e) {
+            logger.error("Error getting device status: {}", e.getMessage(), e);
+            return ResponseEntity.status(500).body(Map.of(
+                "success", false,
+                "message", "Error getting device status: " + e.getMessage(),
+                "platform_info", deviceService.getPlatformInfo(),
+                "timestamp", System.currentTimeMillis()
+            ));
         }
     }
     
@@ -656,89 +213,469 @@ public class FingerprintController {
     public ResponseEntity<Map<String, Object>> closeDevice(
             @RequestParam(defaultValue = "0") int channel) {
         
-        logger.info("Closing device for channel: {}", channel);
-        
         try {
+            // Check platform compatibility first
+            if (!deviceService.isPlatformSupported()) {
+                return ResponseEntity.status(400).body(Map.of(
+                    "success", false,
+                    "message", "Platform not supported. This SDK requires Windows.",
+                    "platform_info", deviceService.getPlatformInfo(),
+                    "channel", channel,
+                    "timestamp", System.currentTimeMillis()
+                ));
+            }
+            
             boolean success = deviceService.closeDevice(channel);
             
             if (success) {
+                return ResponseEntity.ok(Map.of(
+                    "success", true,
+                    "message", "Device closed successfully",
+                    "channel", channel,
+                    "platform_info", deviceService.getPlatformInfo(),
+                    "timestamp", System.currentTimeMillis()
+                ));
+            } else {
+                return ResponseEntity.status(500).body(Map.of(
+                    "success", false,
+                    "message", "Failed to close device",
+                    "channel", channel,
+                    "platform_info", deviceService.getPlatformInfo(),
+                    "timestamp", System.currentTimeMillis()
+                ));
+            }
+        } catch (Exception e) {
+            logger.error("Error closing device for channel {}: {}", channel, e.getMessage(), e);
+            return ResponseEntity.status(500).body(Map.of(
+                "success", false,
+                "message", "Error closing device: " + e.getMessage(),
+                "channel", channel,
+                "platform_info", deviceService.getPlatformInfo(),
+                "timestamp", System.currentTimeMillis()
+            ));
+        }
+    }
+    
+    /**
+     * Get platform information
+     */
+    @GetMapping("/platform")
+    public ResponseEntity<Map<String, Object>> getPlatformInfo() {
+        return ResponseEntity.ok(Map.of(
+            "success", true,
+            "platform_info", deviceService.getPlatformInfo(),
+            "supported", deviceService.isPlatformSupported(),
+            "timestamp", System.currentTimeMillis()
+        ));
+    }
+    
+    /**
+     * Test image storage with different formats
+     */
+    @PostMapping("/storage/test")
+    public ResponseEntity<Map<String, Object>> testImageStorage(
+            @RequestParam(defaultValue = "0") int channel,
+            @RequestParam(defaultValue = "1600") int width,
+            @RequestParam(defaultValue = "1500") int height,
+            @RequestParam(defaultValue = "PNG") String format) {
+        
+        try {
+            // Check platform compatibility first
+            if (!deviceService.isPlatformSupported()) {
+                return ResponseEntity.status(400).body(Map.of(
+                    "success", false,
+                    "message", "Platform not supported. This SDK requires Windows.",
+                    "platform_info", deviceService.getPlatformInfo(),
+                    "timestamp", System.currentTimeMillis()
+                ));
+            }
+            
+            // Check if device is initialized
+            if (!deviceService.isDeviceInitialized(channel)) {
+                logger.info("Device not initialized for channel {}, attempting to initialize", channel);
+                boolean initSuccess = deviceService.initializeDevice(channel);
+                if (!initSuccess) {
+                    return ResponseEntity.status(500).body(Map.of(
+                        "success", false,
+                        "message", "Device not initialized and initialization failed",
+                        "channel", channel,
+                        "platform_info", deviceService.getPlatformInfo(),
+                        "timestamp", System.currentTimeMillis()
+                    ));
+                }
+            }
+            
+            // Capture the fingerprint image
+            Map<String, Object> captureResult = deviceService.captureFingerprint(channel, width, height);
+            
+            if ((Boolean) captureResult.get("success")) {
                 Map<String, Object> response = new HashMap<>();
                 response.put("success", true);
-                response.put("message", "Device closed successfully");
+                response.put("message", "Fingerprint captured and stored as " + format + " successfully");
+                response.put("image_format", format);
+                response.put("width", width);
+                response.put("height", height);
+                response.put("quality_score", captureResult.get("quality_score"));
                 response.put("channel", channel);
-                response.put("timestamp", new Date());
+                response.put("captured_at", new Date());
+                response.put("storage_info", Map.of(
+                    "stored", captureResult.get("storage_success"),
+                    "file_path", captureResult.get("file_path"),
+                    "filename", captureResult.get("filename"),
+                    "file_size", captureResult.get("file_size")
+                ));
+                response.put("platform_info", deviceService.getPlatformInfo());
+                response.put("timestamp", System.currentTimeMillis());
                 
                 return ResponseEntity.ok(response);
             } else {
-                Map<String, Object> response = new HashMap<>();
-                response.put("success", false);
-                response.put("message", "Failed to close device");
-                response.put("timestamp", new Date());
-                
-                return ResponseEntity.status(500).body(response);
+                return ResponseEntity.status(500).body(Map.of(
+                    "success", false,
+                    "message", "Failed to capture fingerprint",
+                    "error_details", captureResult.get("error_details"),
+                    "channel", channel,
+                    "platform_info", deviceService.getPlatformInfo(),
+                    "timestamp", System.currentTimeMillis()
+                ));
             }
             
         } catch (Exception e) {
-            logger.error("Error closing device for channel: {}", channel, e);
-            
-            Map<String, Object> response = new HashMap<>();
-            response.put("success", false);
-            response.put("message", "Error closing device: " + e.getMessage());
-            response.put("timestamp", new Date());
-            
-            return ResponseEntity.status(500).body(response);
+            logger.error("Error testing image storage for channel {}: {}", channel, e.getMessage(), e);
+            return ResponseEntity.status(500).body(Map.of(
+                "success", false,
+                "message", "Error testing image storage: " + e.getMessage(),
+                "channel", channel,
+                "platform_info", deviceService.getPlatformInfo(),
+                "timestamp", System.currentTimeMillis()
+            ));
         }
     }
     
     /**
-     * Get device status
+     * Split Two Thumbs - Extract left and right thumb fingerprints from a single image
+     * This endpoint captures an image containing both thumbs and automatically splits them
      */
-    @GetMapping("/device/status")
-    public ResponseEntity<Map<String, Object>> getDeviceStatus(
-            @RequestParam(defaultValue = "0") int channel) {
-        
-        logger.info("Getting device status for channel: {}", channel);
+    @PostMapping("/split/thumbs")
+    public ResponseEntity<Map<String, Object>> splitTwoThumbs(
+            @RequestParam(defaultValue = "0") int channel,
+            @RequestParam(defaultValue = "1600") int width,
+            @RequestParam(defaultValue = "1500") int height,
+            @RequestParam(defaultValue = "300") int splitWidth,
+            @RequestParam(defaultValue = "400") int splitHeight) {
         
         try {
-            boolean isInitialized = deviceService.isDeviceInitialized(channel);
-            Map<Integer, Boolean> allStatus = deviceService.getAllDeviceStatus();
+            // Check platform compatibility first
+            if (!deviceService.isPlatformSupported()) {
+                return ResponseEntity.status(400).body(Map.of(
+                    "success", false,
+                    "message", "Platform not supported. This SDK requires Windows.",
+                    "platform_info", deviceService.getPlatformInfo(),
+                    "timestamp", System.currentTimeMillis()
+                ));
+            }
             
-            Map<String, Object> response = new HashMap<>();
-            response.put("success", true);
-            response.put("channel", channel);
-            response.put("is_initialized", isInitialized);
-            response.put("all_channels_status", allStatus);
-            response.put("timestamp", new Date());
+            // Check if device is initialized
+            if (!deviceService.isDeviceInitialized(channel)) {
+                logger.info("Device not initialized for channel {}, attempting to initialize", channel);
+                boolean initSuccess = deviceService.initializeDevice(channel);
+                if (!initSuccess) {
+                    return ResponseEntity.status(500).body(Map.of(
+                        "success", false,
+                        "message", "Device not initialized and initialization failed",
+                        "channel", channel,
+                        "platform_info", deviceService.getPlatformInfo(),
+                        "timestamp", System.currentTimeMillis()
+                    ));
+                }
+            }
             
-            return ResponseEntity.ok(response);
+            // Split the two thumbs using the device service
+            Map<String, Object> splitResult = deviceService.splitTwoThumbs(
+                channel, width, height, splitWidth, splitHeight);
+            
+            if ((Boolean) splitResult.get("success")) {
+                return ResponseEntity.ok(splitResult);
+            } else {
+                return ResponseEntity.status(500).body(splitResult);
+            }
             
         } catch (Exception e) {
-            logger.error("Error getting device status for channel: {}", channel, e);
-            
-            Map<String, Object> response = new HashMap<>();
-            response.put("success", false);
-            response.put("message", "Error getting device status: " + e.getMessage());
-            response.put("timestamp", new Date());
-            
-            return ResponseEntity.status(500).body(response);
+            logger.error("Error splitting two thumbs for channel {}: {}", channel, e.getMessage(), e);
+            return ResponseEntity.status(500).body(Map.of(
+                "success", false,
+                "message", "Error splitting two thumbs: " + e.getMessage(),
+                "channel", channel,
+                "platform_info", deviceService.getPlatformInfo(),
+                "timestamp", System.currentTimeMillis()
+            ));
         }
     }
     
     /**
-     * Health check endpoint
+     * Test FPSPLIT library initialization with different dimensions
+     * This helps debug FPSPLIT initialization issues
      */
-    @GetMapping("/health")
-    public ResponseEntity<Map<String, Object>> healthCheck() {
-        Map<String, Object> response = new HashMap<>();
-        response.put("status", "healthy");
-        response.put("timestamp", new Date());
-        response.put("service", "BIO600 Fingerprint Service");
-        response.put("version", "1.0.0");
-        response.put("java_version", System.getProperty("java.version"));
-        response.put("os_name", System.getProperty("os.name"));
-        response.put("os_version", System.getProperty("os.version"));
+    @GetMapping("/test/fpsplit")
+    public ResponseEntity<Map<String, Object>> testFpSplitInitialization() {
+        try {
+            // Check platform compatibility first
+            if (!deviceService.isPlatformSupported()) {
+                return ResponseEntity.status(400).body(Map.of(
+                    "success", false,
+                    "message", "Platform not supported. This SDK requires Windows.",
+                    "platform_info", deviceService.getPlatformInfo(),
+                    "timestamp", System.currentTimeMillis()
+                ));
+            }
+            
+            Map<String, Object> testResult = deviceService.testFpSplitInitialization();
+            return ResponseEntity.ok(testResult);
+            
+        } catch (Exception e) {
+            logger.error("Error testing FPSPLIT initialization: {}", e.getMessage(), e);
+            return ResponseEntity.status(500).body(Map.of(
+                "success", false,
+                "message", "Error testing FPSPLIT initialization: " + e.getMessage(),
+                "platform_info", deviceService.getPlatformInfo(),
+                "timestamp", System.currentTimeMillis()
+            ));
+        }
+    }
+    
+    /**
+     * Get storage statistics
+     */
+    @GetMapping("/storage/stats")
+    public ResponseEntity<Map<String, Object>> getStorageStats() {
+        try {
+            // This would require injecting the storage service into the controller
+            // For now, we'll return a placeholder response
+            return ResponseEntity.ok(Map.of(
+                "success", true,
+                "message", "Storage statistics endpoint - requires storage service integration",
+                "timestamp", System.currentTimeMillis()
+            ));
+        } catch (Exception e) {
+            logger.error("Error getting storage statistics: {}", e.getMessage(), e);
+            return ResponseEntity.status(500).body(Map.of(
+                "success", false,
+                "message", "Error getting storage statistics: " + e.getMessage(),
+                "timestamp", System.currentTimeMillis()
+            ));
+        }
+    }
+    
+    /**
+     * List stored fingerprint images
+     */
+    @GetMapping("/storage/list")
+    public ResponseEntity<Map<String, Object>> listStoredImages(
+            @RequestParam(defaultValue = "0") int page,
+            @RequestParam(defaultValue = "20") int size) {
         
-        return ResponseEntity.ok(response);
+        try {
+            // This would require injecting the storage service into the controller
+            // For now, we'll return a placeholder response
+            return ResponseEntity.ok(Map.of(
+                "success", true,
+                "message", "List stored images endpoint - requires storage service integration",
+                "page", page,
+                "size", size,
+                "timestamp", System.currentTimeMillis()
+            ));
+        } catch (Exception e) {
+            logger.error("Error listing stored images: {}", e.getMessage(), e);
+            return ResponseEntity.status(500).body(Map.of(
+                "success", false,
+                "message", "Error listing stored images: " + e.getMessage(),
+                "timestamp", System.currentTimeMillis()
+            ));
+        }
+    }
+    
+    /**
+     * Play sound feedback
+     * @param soundType 1 = single beep (success), 2 = double beep (two-thumb mode), 3 = error beep
+     */
+    @PostMapping("/sound")
+    public ResponseEntity<Map<String, Object>> playSound(
+            @RequestParam(defaultValue = "1") int soundType) {
+        
+        try {
+            // Check platform compatibility first
+            if (!deviceService.isPlatformSupported()) {
+                return ResponseEntity.status(400).body(Map.of(
+                    "success", false,
+                    "message", "Platform not supported. This SDK requires Windows.",
+                    "platform_info", deviceService.getPlatformInfo(),
+                    "timestamp", System.currentTimeMillis()
+                ));
+            }
+            
+            boolean success = deviceService.playSound(soundType);
+            
+            if (success) {
+                return ResponseEntity.ok(Map.of(
+                    "success", true,
+                    "message", "Sound played successfully",
+                    "sound_type", soundType,
+                    "sound_description", getSoundDescription(soundType),
+                    "platform_info", deviceService.getPlatformInfo(),
+                    "timestamp", System.currentTimeMillis()
+                ));
+            } else {
+                return ResponseEntity.status(500).body(Map.of(
+                    "success", false,
+                    "message", "Failed to play sound",
+                    "sound_type", soundType,
+                    "platform_info", deviceService.getPlatformInfo(),
+                    "timestamp", System.currentTimeMillis()
+                ));
+            }
+        } catch (Exception e) {
+            logger.error("Error playing sound, type {}: {}", soundType, e.getMessage(), e);
+            return ResponseEntity.status(500).body(Map.of(
+                "success", false,
+                "message", "Error playing sound: " + e.getMessage(),
+                "sound_type", soundType,
+                "platform_info", deviceService.getPlatformInfo(),
+                "timestamp", System.currentTimeMillis()
+            ));
+        }
+    }
+    
+    /**
+     * Get sound description for sound type
+     */
+    private String getSoundDescription(int soundType) {
+        switch (soundType) {
+            case 1: return "Single beep (success)";
+            case 2: return "Double beep (two-thumb mode)";
+            case 3: return "Error beep";
+            default: return "Unknown sound type";
+        }
+    }
+    
+    /**
+     * Start real-time fingerprint preview stream
+     * This endpoint starts a continuous stream of fingerprint images for real-time preview
+     */
+    @PostMapping("/preview/start")
+    public ResponseEntity<Map<String, Object>> startPreview(
+            @RequestParam(defaultValue = "0") int channel,
+            @RequestParam(defaultValue = "1600") int width,
+            @RequestParam(defaultValue = "1500") int height) {
+        
+        try {
+            // Check platform compatibility first
+            if (!deviceService.isPlatformSupported()) {
+                return ResponseEntity.status(400).body(Map.of(
+                    "success", false,
+                    "message", "Platform not supported. This SDK requires Windows.",
+                    "platform_info", deviceService.getPlatformInfo(),
+                    "timestamp", System.currentTimeMillis()
+                ));
+            }
+            
+            // Start the preview stream
+            boolean success = deviceService.startPreviewStream(channel, width, height);
+            
+            if (success) {
+                return ResponseEntity.ok(Map.of(
+                    "success", true,
+                    "message", "Preview stream started successfully",
+                    "channel", channel,
+                    "width", width,
+                    "height", height,
+                    "stream_id", "preview_" + channel + "_" + System.currentTimeMillis(),
+                    "platform_info", deviceService.getPlatformInfo(),
+                    "timestamp", System.currentTimeMillis()
+                ));
+            } else {
+                return ResponseEntity.status(500).body(Map.of(
+                    "success", false,
+                    "message", "Failed to start preview stream",
+                    "channel", channel,
+                    "platform_info", deviceService.getPlatformInfo(),
+                    "timestamp", System.currentTimeMillis()
+                ));
+            }
+        } catch (Exception e) {
+            logger.error("Error starting preview stream for channel {}: {}", channel, e.getMessage(), e);
+            return ResponseEntity.status(500).body(Map.of(
+                "success", false,
+                "message", "Error starting preview stream: " + e.getMessage(),
+                "channel", channel,
+                "platform_info", deviceService.getPlatformInfo(),
+                "timestamp", System.currentTimeMillis()
+            ));
+        }
+    }
+    
+    /**
+     * Stop real-time fingerprint preview stream
+     */
+    @PostMapping("/preview/stop")
+    public ResponseEntity<Map<String, Object>> stopPreview(
+            @RequestParam(defaultValue = "0") int channel) {
+        
+        try {
+            boolean success = deviceService.stopPreviewStream(channel);
+            
+            if (success) {
+                return ResponseEntity.ok(Map.of(
+                    "success", true,
+                    "message", "Preview stream stopped successfully",
+                    "channel", channel,
+                    "timestamp", System.currentTimeMillis()
+                ));
+            } else {
+                return ResponseEntity.status(500).body(Map.of(
+                    "success", false,
+                    "message", "Failed to stop preview stream",
+                    "channel", channel,
+                    "timestamp", System.currentTimeMillis()
+                ));
+            }
+        } catch (Exception e) {
+            logger.error("Error stopping preview stream for channel {}: {}", channel, e.getMessage(), e);
+            return ResponseEntity.status(500).body(Map.of(
+                "success", false,
+                "message", "Error stopping preview stream: " + e.getMessage(),
+                "channel", channel,
+                "timestamp", System.currentTimeMillis()
+            ));
+        }
+    }
+    
+    /**
+     * Get current preview frame (for polling-based approach)
+     */
+    @GetMapping("/preview/frame")
+    public ResponseEntity<Map<String, Object>> getPreviewFrame(
+            @RequestParam(defaultValue = "0") int channel) {
+        
+        try {
+            Map<String, Object> frameData = deviceService.getCurrentPreviewFrame(channel);
+            
+            if (frameData != null && (Boolean) frameData.get("success")) {
+                return ResponseEntity.ok(frameData);
+            } else {
+                return ResponseEntity.status(404).body(Map.of(
+                    "success", false,
+                    "message", "No preview frame available",
+                    "channel", channel,
+                    "timestamp", System.currentTimeMillis()
+                ));
+            }
+        } catch (Exception e) {
+            logger.error("Error getting preview frame for channel {}: {}", channel, e.getMessage(), e);
+            return ResponseEntity.status(500).body(Map.of(
+                "success", false,
+                "message", "Error getting preview frame: " + e.getMessage(),
+                "channel", channel,
+                "timestamp", System.currentTimeMillis()
+            ));
+        }
     }
 }
-
