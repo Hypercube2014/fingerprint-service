@@ -4,591 +4,1546 @@ import com.hypercube.fingerprint_service.sdk.ID_FprCapLoad;
 import com.hypercube.fingerprint_service.sdk.GamcLoad;
 import com.hypercube.fingerprint_service.sdk.FpSplitLoad;
 import com.hypercube.fingerprint_service.sdk.FPSPLIT_INFO;
-import com.sun.jna.Pointer;
-import com.sun.jna.Memory;
+import com.hypercube.fingerprint_service.sdk.ZAZ_FpStdLib;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
+import java.util.Base64;
 import java.util.Map;
+import java.util.HashMap;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.ArrayList;
+import java.util.Date;
+import java.util.List;
+import com.sun.jna.Pointer;
+import com.sun.jna.Memory;
+import com.sun.jna.ptr.IntByReference;
 
 @Service
 public class FingerprintDeviceService {
-    
+
     private static final Logger logger = LoggerFactory.getLogger(FingerprintDeviceService.class);
-    
-    private final Map<Integer, Boolean> deviceStatus = new ConcurrentHashMap<>();
-    private final Map<Integer, DeviceInfo> deviceInfoCache = new ConcurrentHashMap<>();
-    
+    private static final Map<Integer, Boolean> deviceStatus = new ConcurrentHashMap<>();
+
+    // Real-time preview management
+    private static final Map<Integer, Boolean> previewStreams = new ConcurrentHashMap<>();
+    private static final Map<Integer, Thread> previewThreads = new ConcurrentHashMap<>();
+    private static final Map<Integer, Map<String, Object>> latestFrames = new ConcurrentHashMap<>();
+    private static final Map<Integer, Boolean> previewRunning = new ConcurrentHashMap<>();
+
+    private final boolean isWindows;
+    private final boolean isLinux;
+
     @Autowired
     private FingerprintFileStorageService fileStorageService;
-    
+
+    public FingerprintDeviceService() {
+        String os = System.getProperty("os.name").toLowerCase();
+        this.isWindows = os.contains("win");
+        this.isLinux = os.contains("linux") || os.contains("unix");
+
+        logger.info("Detected OS: {} (Windows: {}, Linux: {})", os, isWindows, isLinux);
+    }
+
     /**
-     * Initialize fingerprint device
+     * Initialize fingerprint device for a specific channel
      */
-    public DeviceInitResult initializeDevice(int channel) {
+    public boolean initializeDevice(int channel) {
         try {
             logger.info("Initializing fingerprint device for channel: {}", channel);
-            
-            int ret = ID_FprCapLoad.ID_FprCapinterface.instance.LIVESCAN_Init();
-            if (ret == 1) {
-                deviceStatus.put(channel, true);
-                logger.info("Device initialized successfully for channel: {}", channel);
-                
-                // Cache device information
-                DeviceInfo deviceInfo = getDeviceInfoInternal(channel);
-                deviceInfoCache.put(channel, deviceInfo);
-                
-                return new DeviceInitResult(true, "Device initialized successfully", channel, deviceInfo);
-            } else {
-                logger.error("Device initialization failed for channel: {} with error code: {}", channel, ret);
-                return new DeviceInitResult(false, "Device initialization failed", channel, null);
-            }
-        } catch (Exception e) {
-            logger.error("Error initializing device for channel: {}", channel, e);
-            return new DeviceInitResult(false, "Error initializing device: " + e.getMessage(), channel, null);
-        }
-    }
-    
-    /**
-     * Capture fingerprint image with file storage
-     */
-    public CaptureResult captureFingerprint(int channel, int width, int height, String customName) {
-        try {
-            // Check if device is initialized
-            if (!deviceStatus.getOrDefault(channel, false)) {
-                logger.warn("Device not initialized for channel: {}, attempting to initialize", channel);
-                DeviceInitResult initResult = initializeDevice(channel);
-                if (!initResult.isSuccess()) {
-                    return new CaptureResult(false, "Device not initialized", null, 0, 0, 0, 0, null);
-                }
+
+            // Check platform compatibility
+            if (!isWindows) {
+                logger.error("Platform not supported. This SDK requires Windows. Current platform: {}",
+                        System.getProperty("os.name"));
+                return false;
             }
 
-            logger.info("Starting fingerprint capture for channel: {} with dimensions: {}x{}", channel, width, height);
-            
+            int ret = ID_FprCapLoad.ID_FprCapinterface.instance.LIVESCAN_Init();
+            if (ret == 1) {
+                // CORRECTED: Initialize MOSAIC library like C# sample
+                try {
+                    int mosaicRet = GamcLoad.instance.MOSAIC_Init();
+                    if (mosaicRet == 1) {
+                        logger.info("MOSAIC library initialized successfully");
+                    } else {
+                        logger.warn("MOSAIC library initialization failed with return code: {}", mosaicRet);
+                    }
+                } catch (Exception e) {
+                    logger.warn("Error initializing MOSAIC library: {}", e.getMessage());
+                }
+
+                deviceStatus.put(channel, true);
+                logger.info("Device initialized successfully for channel: {}", channel);
+                return true;
+            } else {
+                logger.error("Device initialization failed for channel: {} with error code: {}", channel, ret);
+                return false;
+            }
+        } catch (UnsatisfiedLinkError e) {
+            logger.error("Native library cannot be loaded. This is likely because you're running on Linux but the SDK requires Windows DLLs. Error: {}", e.getMessage());
+            return false;
+        } catch (Exception e) {
+            logger.error("Error initializing device for channel: {}: {}", channel, e.getMessage(), e);
+            return false;
+        }
+    }
+
+    /**
+     * Capture fingerprint image
+     */
+    public Map<String, Object> captureFingerprint(int channel, int width, int height) {
+        try {
+            logger.info("Capturing fingerprint for channel: {} with dimensions: {}x{}", channel, width, height);
+
+            // Check platform compatibility
+            if (!isWindows) {
+                logger.error("Platform not supported. This SDK requires Windows.");
+                return Map.of(
+                        "success", false,
+                        "error_details", "Platform not supported. This SDK requires Windows."
+                );
+            }
+
             // Begin capture
             int ret = ID_FprCapLoad.ID_FprCapinterface.instance.LIVESCAN_BeginCapture(channel);
             if (ret != 1) {
-                logger.error("Failed to begin capture for channel: {}", channel);
-                return new CaptureResult(false, "Failed to begin capture", null, 0, 0, 0, 0, null);
+                logger.error("Failed to begin capture for channel: {} with error code: {}", channel, ret);
+                return Map.of(
+                        "success", false,
+                        "error_details", "Failed to begin capture with error code: " + ret
+                );
             }
 
-            // Get fingerprint data
-            byte[] rawData = new byte[width * height];
+            // Get fingerprint data (CORRECTED - using 2 bytes per pixel like C# sample)
+            byte[] rawData = new byte[width * height * 2]; // 2 bytes per pixel for 16-bit grayscale
             ret = ID_FprCapLoad.ID_FprCapinterface.instance.LIVESCAN_GetFPRawData(channel, rawData);
-            
+
             if (ret != 1) {
                 ID_FprCapLoad.ID_FprCapinterface.instance.LIVESCAN_EndCapture(channel);
-                logger.error("Failed to capture fingerprint data for channel: {}", channel);
-                return new CaptureResult(false, "Failed to capture fingerprint data", null, 0, 0, 0, 0, null);
+                logger.error("Failed to capture fingerprint data for channel: {} with error code: {}", channel, ret);
+                return Map.of(
+                        "success", false,
+                        "error_details", "Failed to capture fingerprint data with error code: " + ret
+                );
             }
 
             // End capture
             ID_FprCapLoad.ID_FprCapinterface.instance.LIVESCAN_EndCapture(channel);
 
+            // Convert to base64
+            String base64Image = Base64.getEncoder().encodeToString(rawData);
+
             // Assess quality
             int quality = assessFingerprintQuality(rawData, width, height);
-            
-            // Store file
-            FingerprintFileStorageService.FileStorageResult storageResult = fileStorageService.storeFingerprintImage(
-                rawData, "standard", customName
-            );
-            
-            if (!storageResult.isSuccess()) {
-                logger.warn("Failed to store fingerprint file: {}", storageResult.getMessage());
-            }
-            
-            logger.info("Fingerprint captured successfully for channel: {} with quality: {}", channel, quality);
 
-            return new CaptureResult(true, "Fingerprint captured successfully", rawData, width, height, quality, channel, storageResult);
+            // Store the image automatically as normal image file
+            String customName = String.format("channel_%d_%dx%d", channel, width, height);
+            FingerprintFileStorageService.FileStorageResult storageResult =
+                    fileStorageService.storeFingerprintImageAsImageOrganized(rawData, "standard", customName, width, height);
 
-        } catch (Exception e) {
-            logger.error("Error capturing fingerprint for channel: {}", channel, e);
-            return new CaptureResult(false, "Error capturing fingerprint: " + e.getMessage(), null, 0, 0, 0, 0, null);
-        }
-    }
-    
-    /**
-     * Capture fingerprint image (overloaded for backward compatibility)
-     */
-    public CaptureResult captureFingerprint(int channel, int width, int height) {
-        return captureFingerprint(channel, width, height, null);
-    }
-    
-    /**
-     * Capture high-resolution original image with file storage
-     */
-    public CaptureResult captureOriginalImage(int channel, String customName) {
-        try {
-            if (!deviceStatus.getOrDefault(channel, false)) {
-                return new CaptureResult(false, "Device not initialized", null, 0, 0, 0, 0, null);
+            if (storageResult.isSuccess()) {
+                logger.info("Fingerprint captured and stored as image successfully for channel: {} with quality: {}. File: {}",
+                        channel, quality, storageResult.getFilePath());
+            } else {
+                logger.warn("Fingerprint captured but image storage failed for channel: {}. Error: {}",
+                        channel, storageResult.getMessage());
             }
 
-            logger.info("Capturing original image for channel: {}", channel);
-            
-            int maxWidth = 2688;
-            int maxHeight = 1944;
-            byte[] rawData = new byte[maxWidth * maxHeight];
-            
-            int ret = ID_FprCapLoad.ID_FprCapinterface.instance.LIVESCAN_GetSrcFPRawData(channel, rawData);
-            
-            if (ret != 1) {
-                logger.error("Failed to capture original image for channel: {}", channel);
-                return new CaptureResult(false, "Failed to capture original image", null, 0, 0, 0, 0, null);
-            }
-
-            // Store file
-            FingerprintFileStorageService.FileStorageResult storageResult = fileStorageService.storeFingerprintImage(
-                rawData, "original", customName
-            );
-            
-            if (!storageResult.isSuccess()) {
-                logger.warn("Failed to store original image file: {}", storageResult.getMessage());
-            }
-
-            logger.info("Original image captured successfully for channel: {}", channel);
-            
-            return new CaptureResult(true, "Original image captured successfully", rawData, maxWidth, maxHeight, 100, channel, storageResult);
-
-        } catch (Exception e) {
-            logger.error("Error capturing original image for channel: {}", channel, e);
-            return new CaptureResult(false, "Error capturing original image: " + e.getMessage(), null, 0, 0, 0, 0, null);
-        }
-    }
-    
-    /**
-     * Capture high-resolution original image (overloaded for backward compatibility)
-     */
-    public CaptureResult captureOriginalImage(int channel) {
-        return captureOriginalImage(channel, null);
-    }
-    
-    /**
-     * Capture rolled fingerprint (stitched) with file storage
-     */
-    public CaptureResult captureRolledFingerprint(int width, int height, String customName) {
-        try {
-            logger.info("Initializing mosaic library for rolled fingerprint capture");
-            
-            // Initialize mosaic library
-            int ret = GamcLoad.instance.MOSAIC_Init();
-            if (ret != 1) {
-                logger.error("Failed to initialize mosaic library");
-                return new CaptureResult(false, "Failed to initialize mosaic library", null, 0, 0, 0, 0, null);
-            }
-
-            // Start mosaic process
-            byte[] fingerBuf = new byte[width * height];
-            ret = GamcLoad.instance.MOSAIC_Start(fingerBuf, width, height);
-            if (ret != 1) {
-                GamcLoad.instance.MOSAIC_Close();
-                logger.error("Failed to start mosaic process");
-                return new CaptureResult(false, "Failed to start mosaic process", null, 0, 0, 0, 0, null);
-            }
-
-            // Perform mosaic
-            ret = GamcLoad.instance.MOSAIC_DoMosaic(fingerBuf, width, height);
-            if (ret != 1) {
-                GamcLoad.instance.MOSAIC_Stop();
-                GamcLoad.instance.MOSAIC_Close();
-                logger.error("Failed to perform mosaic");
-                return new CaptureResult(false, "Failed to perform mosaic", null, 0, 0, 0, 0, null);
-            }
-
-            // Stop and close
-            GamcLoad.instance.MOSAIC_Stop();
-            GamcLoad.instance.MOSAIC_Close();
-
-            // Store file
-            FingerprintFileStorageService.FileStorageResult storageResult = fileStorageService.storeFingerprintImage(
-                fingerBuf, "rolled", customName
-            );
-            
-            if (!storageResult.isSuccess()) {
-                logger.warn("Failed to store rolled fingerprint file: {}", storageResult.getMessage());
-            }
-
-            logger.info("Rolled fingerprint captured successfully with dimensions: {}x{}", width, height);
-            
-            return new CaptureResult(true, "Rolled fingerprint captured successfully", fingerBuf, width, height, 90, 0, storageResult);
-
-        } catch (Exception e) {
-            logger.error("Error capturing rolled fingerprint", e);
-            return new CaptureResult(false, "Error capturing rolled fingerprint: " + e.getMessage(), null, 0, 0, 0, 0, null);
-        }
-    }
-    
-    /**
-     * Capture rolled fingerprint (overloaded for backward compatibility)
-     */
-    public CaptureResult captureRolledFingerprint(int width, int height) {
-        return captureRolledFingerprint(width, height, null);
-    }
-    
-    /**
-     * Split multiple fingers from image with file storage
-     */
-    public SplitResult splitFingerprints(byte[] imageData, int width, int height, int splitWidth, int splitHeight, String customName) {
-        try {
-            logger.info("Splitting fingerprints with dimensions: {}x{} into {}x{}", width, height, splitWidth, splitHeight);
-            
-            // Initialize split library
-            int ret = FpSplitLoad.instance.FPSPLIT_Init(width, height, 1);
-            if (ret != 1) {
-                logger.error("Failed to initialize split library");
-                return new SplitResult(false, "Failed to initialize split library", 0, null);
-            }
-
-            // Prepare output buffer
-            int size = 28; // Size of FPSPLIT_INFO structure
-            Pointer infosPtr = new Memory(size * 10);
-            for (int i = 0; i < 10; i++) {
-                Pointer ptr = infosPtr.share(i * size + 24);
-                Pointer p = new Memory(splitWidth * splitHeight);
-                ptr.setPointer(0, p);
-            }
-
-            int fpNum = 0;
-            ret = FpSplitLoad.instance.FPSPLIT_DoSplit(
-                imageData, width, height, 1, splitWidth, splitHeight, fpNum, infosPtr
+            return Map.of(
+                    "success", true,
+                    "image", base64Image,
+                    "quality_score", quality,
+                    "storage_success", storageResult.isSuccess(),
+                    "file_path", storageResult.getFilePath(),
+                    "filename", storageResult.getFilename(),
+                    "file_size", storageResult.getFileSize()
             );
 
-            if (ret != 1) {
-                FpSplitLoad.instance.FPSPLIT_Uninit();
-                logger.error("Failed to split fingerprints");
-                return new SplitResult(false, "Failed to split fingerprints", 0, null);
-            }
-
-            // Store split image
-            FingerprintFileStorageService.FileStorageResult storageResult = fileStorageService.storeFingerprintImage(
-                imageData, "split", customName
+        } catch (UnsatisfiedLinkError e) {
+            logger.error("Native library cannot be loaded. This is likely because you're running on Linux but the SDK requires Windows DLLs. Error: {}", e.getMessage());
+            return Map.of(
+                    "success", false,
+                    "error_details", "Native library cannot be loaded. This SDK requires Windows."
             );
-            
-            if (!storageResult.isSuccess()) {
-                logger.warn("Failed to store split fingerprint file: {}", storageResult.getMessage());
-            }
-
-            // Process results
-            // Note: This is a simplified version. In production, you'd need to properly
-            // extract the FPSPLIT_INFO structures from the pointer
-
-            FpSplitLoad.instance.FPSPLIT_Uninit();
-
-            logger.info("Fingerprints split successfully, found {} fingerprints", fpNum);
-
-            return new SplitResult(true, "Fingerprints split successfully", fpNum, storageResult);
-
         } catch (Exception e) {
-            logger.error("Error splitting fingerprints", e);
-            return new SplitResult(false, "Error splitting fingerprints: " + e.getMessage(), 0, null);
+            logger.error("Error capturing fingerprint for channel: {}: {}", channel, e.getMessage(), e);
+            return Map.of(
+                    "success", false,
+                    "error_details", "Error capturing fingerprint: " + e.getMessage()
+            );
         }
     }
-    
-    /**
-     * Split multiple fingers from image (overloaded for backward compatibility)
-     */
-    public SplitResult splitFingerprints(byte[] imageData, int width, int height, int splitWidth, int splitHeight) {
-        return splitFingerprints(imageData, width, height, splitWidth, splitHeight, null);
-    }
-    
-    /**
-     * Get device information
-     */
-    public DeviceInfo getDeviceInfo(int channel) {
-        try {
-            if (!deviceStatus.getOrDefault(channel, false)) {
-                return null;
-            }
-            
-            // Return cached info if available
-            if (deviceInfoCache.containsKey(channel)) {
-                return deviceInfoCache.get(channel);
-            }
-            
-            return getDeviceInfoInternal(channel);
-        } catch (Exception e) {
-            logger.error("Error getting device info for channel: {}", channel, e);
-            return null;
-        }
-    }
-    
-    /**
-     * Set device parameters
-     */
-    public boolean setDeviceSettings(int channel, int brightness, int contrast) {
-        try {
-            if (!deviceStatus.getOrDefault(channel, false)) {
-                return false;
-            }
 
-            logger.info("Setting device parameters for channel: {} - brightness: {}, contrast: {}", channel, brightness, contrast);
-            
-            // Set brightness
-            int ret = ID_FprCapLoad.ID_FprCapinterface.instance.LIVESCAN_SetBright(channel, brightness);
-            if (ret != 1) {
-                logger.error("Failed to set brightness for channel: {}", channel);
-                return false;
-            }
-
-            // Set contrast
-            ret = ID_FprCapLoad.ID_FprCapinterface.instance.LIVESCAN_SetContrast(channel, contrast);
-            if (ret != 1) {
-                logger.error("Failed to set contrast for channel: {}", channel);
-                return false;
-            }
-
-            logger.info("Device settings updated successfully for channel: {}", channel);
-            return true;
-
-        } catch (Exception e) {
-            logger.error("Error setting device parameters for channel: {}", channel, e);
-            return false;
-        }
-    }
-    
-    /**
-     * Close device
-     */
-    public boolean closeDevice(int channel) {
-        try {
-            int ret = ID_FprCapLoad.ID_FprCapinterface.instance.LIVESCAN_Close();
-            deviceStatus.put(channel, false);
-            deviceInfoCache.remove(channel);
-            
-            logger.info("Device closed successfully for channel: {}", channel);
-            return true;
-
-        } catch (Exception e) {
-            logger.error("Error closing device for channel: {}", channel, e);
-            return false;
-        }
-    }
-    
-    /**
-     * Check if device is initialized
-     */
-    public boolean isDeviceInitialized(int channel) {
-        return deviceStatus.getOrDefault(channel, false);
-    }
-    
-    /**
-     * Get device status for all channels
-     */
-    public Map<Integer, Boolean> getAllDeviceStatus() {
-        return new ConcurrentHashMap<>(deviceStatus);
-    }
-    
-    /**
-     * Get storage statistics
-     */
-    public FingerprintFileStorageService.StorageStats getStorageStats() {
-        return fileStorageService.getStorageStats();
-    }
-    
-    /**
-     * Clean up old files
-     */
-    public FingerprintFileStorageService.CleanupResult cleanupOldFiles(int daysToKeep) {
-        return fileStorageService.cleanupOldFiles(daysToKeep);
-    }
-    
     /**
      * Assess fingerprint quality
      */
     private int assessFingerprintQuality(byte[] imageData, int width, int height) {
         try {
-            // Use the SDK's quality assessment if available
+            // First try MOSAIC quality assessment (like C# sample)
             if (GamcLoad.instance.MOSAIC_IsSupportFingerQuality() == 1) {
-                return GamcLoad.instance.MOSAIC_FingerQuality(imageData, width, height);
+                int quality = GamcLoad.instance.MOSAIC_FingerQuality(imageData, width, height);
+                logger.debug("MOSAIC_FingerQuality result: {}", quality);
+                if (quality >= 0) {
+                    return quality;
+                }
             }
-            
+
+            // Try ZAZ_FpStdLib quality assessment (like demo Java)
+            try {
+                // Convert to 256x360 format for ZAZ_FpStdLib
+                byte[] standardImageData = convertImageToStandardFormat(imageData, width, height);
+                long deviceHandle = ZAZ_FpStdLib.INSTANCE.ZAZ_FpStdLib_OpenDevice();
+                if (deviceHandle != 0) {
+                    try {
+                        int quality = ZAZ_FpStdLib.INSTANCE.ZAZ_FpStdLib_GetImageQuality(deviceHandle, standardImageData);
+                        logger.debug("ZAZ_FpStdLib_GetImageQuality result: {}", quality);
+                        if (quality >= 0) {
+                            return quality;
+                        }
+                    } finally {
+                        ZAZ_FpStdLib.INSTANCE.ZAZ_FpStdLib_CloseDevice(deviceHandle);
+                    }
+                }
+            } catch (Exception e) {
+                logger.debug("ZAZ_FpStdLib quality assessment failed: {}", e.getMessage());
+            }
+
             // Fallback to basic quality assessment
-            return calculateBasicQuality(imageData, width, height);
-            
+            int basicQuality = calculateBasicQuality(imageData, width, height);
+            logger.debug("Basic quality assessment result: {}", basicQuality);
+            return basicQuality;
+
         } catch (Exception e) {
-            logger.warn("Error assessing fingerprint quality, using default score", e);
+            logger.warn("Error assessing fingerprint quality, using default score: {}", e.getMessage());
+            // Return default quality score
             return 75;
         }
     }
-    
+
     /**
      * Basic quality assessment algorithm
+     * Improved to handle 16-bit grayscale format (2 bytes per pixel)
      */
     private int calculateBasicQuality(byte[] imageData, int width, int height) {
         if (imageData == null || imageData.length == 0) {
             return 0;
         }
 
+        // Handle 16-bit grayscale format (2 bytes per pixel)
+        int pixelCount = width * height;
+        int expectedSize = pixelCount * 2; // 2 bytes per pixel
+
+        if (imageData.length != expectedSize) {
+            logger.warn("Image data size mismatch. Expected: {}, Got: {}", expectedSize, imageData.length);
+            // Try to work with what we have
+            pixelCount = imageData.length / 2;
+        }
+
+        // Convert 16-bit grayscale to 8-bit for analysis
+        byte[] gray8Data = new byte[pixelCount];
+        for (int i = 0; i < pixelCount; i++) {
+            // Combine two bytes to get 16-bit value, then convert to 8-bit
+            int pixel16 = ((imageData[i * 2 + 1] & 0xFF) << 8) | (imageData[i * 2] & 0xFF);
+            gray8Data[i] = (byte) (pixel16 >> 8); // Take upper 8 bits
+        }
+
         // Calculate average intensity
         long totalIntensity = 0;
-        for (byte b : imageData) {
+        for (byte b : gray8Data) {
             totalIntensity += (b & 0xFF);
         }
-        double avgIntensity = (double) totalIntensity / imageData.length;
+        double avgIntensity = (double) totalIntensity / gray8Data.length;
 
         // Calculate standard deviation
         double variance = 0;
-        for (byte b : imageData) {
+        for (byte b : gray8Data) {
             double diff = (b & 0xFF) - avgIntensity;
             variance += diff * diff;
         }
-        variance /= imageData.length;
+        variance /= gray8Data.length;
         double stdDev = Math.sqrt(variance);
 
         // Quality score based on contrast and brightness
         int quality = 0;
-        
+
         // Good contrast (high std dev) increases quality
         if (stdDev > 30) quality += 30;
         else if (stdDev > 20) quality += 20;
         else if (stdDev > 10) quality += 10;
-        
+
         // Good brightness (not too dark, not too bright) increases quality
         if (avgIntensity > 50 && avgIntensity < 200) quality += 40;
         else if (avgIntensity > 30 && avgIntensity < 220) quality += 20;
-        
+
         // Check for non-zero pixels (fingerprint presence)
         int nonZeroPixels = 0;
-        for (byte b : imageData) {
+        for (byte b : gray8Data) {
             if ((b & 0xFF) > 0) nonZeroPixels++;
         }
-        double coverage = (double) nonZeroPixels / imageData.length;
-        
+        double coverage = (double) nonZeroPixels / gray8Data.length;
+
         if (coverage > 0.3 && coverage < 0.8) quality += 30;
         else if (coverage > 0.1 && coverage < 0.9) quality += 15;
 
+        logger.debug("Quality assessment - avgIntensity: {:.2f}, stdDev: {:.2f}, coverage: {:.2f}, quality: {}",
+                avgIntensity, stdDev, coverage, quality);
+
         return Math.min(100, Math.max(0, quality));
     }
-    
-    /**
-     * Get device information internally
-     */
-    private DeviceInfo getDeviceInfoInternal(int channel) {
-        try {
-            // Get channel count
-            int channelCount = ID_FprCapLoad.ID_FprCapinterface.instance.LIVESCAN_GetChannelCount();
-            
-            // Get max image size
-            int[] width = new int[1];
-            int[] height = new int[1];
-            ID_FprCapLoad.ID_FprCapinterface.instance.LIVESCAN_GetMaxImageSize(channel, width, height);
-            
-            // Get version
-            String version = ID_FprCapLoad.ID_FprCapinterface.instance.LIVESCAN_GetVersion() + "";
-            
-            // Get description
-            byte[] desc = new byte[1024];
-            ID_FprCapLoad.ID_FprCapinterface.instance.LIVESCAN_GetDesc(desc);
-            String description = new String(desc).trim();
 
-            return new DeviceInfo(channelCount, width[0], height[0], version, description, channel);
+    /**
+     * Check if device is initialized for a specific channel
+     */
+    public boolean isDeviceInitialized(int channel) {
+        return deviceStatus.getOrDefault(channel, false);
+    }
+
+    /**
+     * Get device status for all channels
+     */
+    public Map<Integer, Boolean> getDeviceStatus() {
+        return new ConcurrentHashMap<>(deviceStatus);
+    }
+
+    /**
+     * Close device for a specific channel
+     */
+    public boolean closeDevice(int channel) {
+        try {
+            if (!isWindows) {
+                logger.error("Platform not supported. This SDK requires Windows.");
+                return false;
+            }
+
+            int ret = ID_FprCapLoad.ID_FprCapinterface.instance.LIVESCAN_Close();
+            if (ret == 1) {
+                deviceStatus.put(channel, false);
+                logger.info("Device closed successfully for channel: {}", channel);
+                return true;
+            } else {
+                logger.error("Failed to close device for channel: {} with error code: {}", channel, ret);
+                return false;
+            }
+        } catch (UnsatisfiedLinkError e) {
+            logger.error("Native library cannot be loaded. This is likely because you're running on Linux but the SDK requires Windows DLLs. Error: {}", e.getMessage());
+            return false;
         } catch (Exception e) {
-            logger.error("Error getting device info internally for channel: {}", channel, e);
+            logger.error("Error closing device for channel: {}: {}", channel, e.getMessage(), e);
+            return false;
+        }
+    }
+
+    /**
+     * Get error information for a specific error code
+     */
+    public String getErrorInfo(int errorCode) {
+        try {
+            if (!isWindows) {
+                return "Platform not supported. This SDK requires Windows.";
+            }
+
+            byte[] errorInfo = new byte[256];
+            int ret = ID_FprCapLoad.ID_FprCapinterface.instance.LIVESCAN_GetErrorInfo(errorCode, errorInfo);
+            if (ret == 1) {
+                return new String(errorInfo).trim();
+            } else {
+                return "Unknown error code: " + errorCode;
+            }
+        } catch (UnsatisfiedLinkError e) {
+            return "Native library cannot be loaded. This SDK requires Windows.";
+        } catch (Exception e) {
+            logger.error("Error getting error info for code {}: {}", errorCode, e.getMessage());
+            return "Error retrieving error information";
+        }
+    }
+
+    /**
+     * Check if the current platform is supported
+     */
+    public boolean isPlatformSupported() {
+        return isWindows;
+    }
+
+    /**
+     * Get platform information
+     */
+    public String getPlatformInfo() {
+        return String.format("OS: %s, Architecture: %s, Supported: %s",
+                System.getProperty("os.name"),
+                System.getProperty("os.arch"),
+                isPlatformSupported());
+    }
+
+    /**
+     * Split two thumbs from a single captured image
+     * This method captures an image and automatically splits it into left and right thumb images
+     * Following the exact sequence from the demo application for proper hardware interaction
+     */
+    public Map<String, Object> splitTwoThumbs(int channel, int width, int height, int splitWidth, int splitHeight) {
+        try {
+            logger.info("Splitting two thumbs for channel: {} with dimensions: {}x{} -> {}x{}",
+                    channel, width, height, splitWidth, splitHeight);
+
+            // Check platform compatibility
+            if (!isWindows) {
+                logger.error("Platform not supported. This SDK requires Windows.");
+                return Map.of(
+                        "success", false,
+                        "error_details", "Platform not supported. This SDK requires Windows."
+                );
+            }
+
+            // CRITICAL: Follow C# sample code sequence exactly
+            // Step 1: Initialize device first (like C# sample btn_open_Click)
+            logger.info("Step 1: Initializing fingerprint device (following C# sample sequence)");
+            int deviceRet = ID_FprCapLoad.ID_FprCapinterface.instance.LIVESCAN_Init();
+            if (deviceRet != 1) {
+                logger.error("Device initialization failed with return code: {}", deviceRet);
+                return Map.of(
+                        "success", false,
+                        "error_details", "Device initialization failed with return code: " + deviceRet
+                );
+            }
+            logger.info("Device initialized successfully");
+
+            // CORRECTED: Initialize MOSAIC library like C# sample
+            try {
+                int mosaicRet = GamcLoad.instance.MOSAIC_Init();
+                if (mosaicRet == 1) {
+                    logger.info("MOSAIC library initialized successfully for split operation");
+                } else {
+                    logger.warn("MOSAIC library initialization failed with return code: {}", mosaicRet);
+                }
+            } catch (Exception e) {
+                logger.warn("Error initializing MOSAIC library for split operation: {}", e.getMessage());
+            }
+
+            // Step 2: Set capture window (like C# sample LIVESCAN_SetCaptWindow)
+            logger.info("Step 2: Setting capture window to {}x{}", width, height);
+            int windowRet = ID_FprCapLoad.ID_FprCapinterface.instance.LIVESCAN_SetCaptWindow(0, 0, 0, width, height);
+            if (windowRet != 1) {
+                logger.warn("Failed to set capture window, return code: {}", windowRet);
+            }
+
+            // Step 3: Set LED/LCD display for two-thumb mode (this shows green indicators)
+            logger.info("Step 3: Setting LED/LCD display for two-thumb mode (this should show green thumb indicators)");
+            try {
+                // Set LED display for two-thumb mode (imageIndex 4 = TWO_THUMB_FINGER)
+                int ledRet = ID_FprCapLoad.ID_FprCapinterface.instance.LIVESCAN_SetLedLight(4);
+                if (ledRet == 1) {
+                    logger.info("LED display set successfully for two-thumb mode");
+                } else {
+                    logger.warn("Failed to set LED display, return code: {}", ledRet);
+                }
+            } catch (Exception e) {
+                logger.warn("Error setting LED display: {}", e.getMessage());
+            }
+
+            // Step 4: Play sound to indicate two-thumb mode is ready (like C# sample)
+            try {
+                logger.info("Step 4: Playing two-thumb selection sound");
+                int beepRet = ID_FprCapLoad.ID_FprCapinterface.instance.LIVESCAN_Beep(2); // 2 beeps for two thumbs
+                if (beepRet == 1) {
+                    logger.info("Two-thumb selection sound played successfully");
+                } else {
+                    logger.warn("Failed to play two-thumb selection sound, return code: {}", beepRet);
+                }
+            } catch (Exception e) {
+                logger.warn("Error playing two-thumb selection sound: {}", e.getMessage());
+            }
+
+            try {
+                // Step 5: Continuous capture loop like C# sample (CORRECTED - using 2 bytes per pixel like C# sample)
+                logger.info("Step 5: Starting continuous capture loop with green thumb indicators active");
+                // CORRECTED: C# sample uses w * h * 2 (2 bytes per pixel for 16-bit grayscale)
+                byte[] rawData = new byte[width * height * 2];
+
+                long startTime = System.currentTimeMillis();
+                long timeout = 10000; // 10 seconds timeout like C# sample
+                int expectedFingerprints = 2; // Two thumbs
+
+                int attemptCount = 0;
+                while (System.currentTimeMillis() - startTime < timeout) {
+                    attemptCount++;
+                    long elapsed = System.currentTimeMillis() - startTime;
+
+                    logger.info("Attempt #{} (elapsed: {}ms) - Capturing fingerprint image...", attemptCount, elapsed);
+                    int captureRet = ID_FprCapLoad.ID_FprCapinterface.instance.LIVESCAN_GetFPRawData(channel, rawData);
+
+                    if (captureRet != 1) {
+                        logger.warn("Attempt #{} - Failed to capture fingerprint data. Return code: {}, retrying...", attemptCount, captureRet);
+                        try {
+                            Thread.sleep(100); // Small delay before retry
+                        } catch (InterruptedException e) {
+                            Thread.currentThread().interrupt();
+                            break;
+                        }
+                        continue;
+                    }
+
+                    logger.info("Attempt #{} - Image captured successfully, checking quality...", attemptCount);
+                    // CORRECTED: Add quality check before split (like C# sample)
+                    int quality = assessFingerprintQuality(rawData, width, height);
+                    logger.info("Attempt #{} - Image quality score: {}", attemptCount, quality);
+
+                    if (quality < 0) {
+                        logger.warn("Attempt #{} - Image quality too low ({}), retrying...", attemptCount, quality);
+                        try {
+                            Thread.sleep(100); // Small delay before retry
+                        } catch (InterruptedException e) {
+                            Thread.currentThread().interrupt();
+                            break;
+                        }
+                        continue;
+                    }
+
+                    logger.info("Attempt #{} - Image quality acceptable ({}), attempting split...", attemptCount, quality);
+
+                    // Step 6: Prepare output buffer for split results (CORRECTED - following C# sample exactly)
+                    logger.debug("Preparing split buffers and performing FPSPLIT_DoSplit (NO FPSPLIT_Init needed)");
+
+                    // CORRECTED: Use FPSPLIT_INFO structure constants for proper memory allocation (like C# sample)
+                    int size = FPSPLIT_INFO.getStructureSize(); // 32 bytes on x64
+                    Pointer infosPtr = new Memory(size * 10); // Space for 10 fingerprints (like C# sample)
+
+                    // CORRECTED: Use FPSPLIT_INFO constants for correct offset calculation (like C# sample)
+                    // Prepare memory for each fingerprint's output buffer (following C# sample pattern exactly)
+                    for (int i = 0; i < 10; i++) { // Allocate for 10 fingerprints like C# sample
+                        Pointer ptr = infosPtr.share(FPSPLIT_INFO.getMemoryOffset(i)); // Correct offset calculation
+                        Pointer p = new Memory(splitWidth * splitHeight);
+                        ptr.setPointer(0, p);
+                    }
+
+                    // Perform the splitting (CORRECTED - using IntByReference like C# ref int)
+                    logger.info("Attempt #{} - Calling FPSPLIT_DoSplit with image size: {}x{}, split size: {}x{}", attemptCount, width, height, splitWidth, splitHeight);
+                    IntByReference fpNumRef = new IntByReference(0);
+                    int ret = FpSplitLoad.instance.FPSPLIT_DoSplit(
+                            rawData, width, height, 1, splitWidth, splitHeight, fpNumRef, infosPtr
+                    );
+
+                    int fpNum = fpNumRef.getValue(); // Get the actual number of fingerprints found
+                    logger.info("Attempt #{} - FPSPLIT_DoSplit returned: {}, fingerprints found: {}", attemptCount, ret, fpNum);
+
+                    if (ret != 1) {
+                        logger.warn("Attempt #{} - FPSPLIT_DoSplit failed with return code: {}, retrying...", attemptCount, ret);
+                        try {
+                            Thread.sleep(100); // Small delay before retry
+                        } catch (InterruptedException e) {
+                            Thread.currentThread().interrupt();
+                            break;
+                        }
+                        continue;
+                    }
+
+                    // Check if we found exactly 2 thumbs (like C# sample checks for fingernum)
+                    if (fpNum == expectedFingerprints) {
+                        logger.info("Attempt #{} - SUCCESS! FPSPLIT splitting completed successfully. Found exactly {} thumbs as expected. Processing results...", attemptCount, fpNum);
+
+                        // Step 7: Process the split results and store individual thumb images
+                        List<Map<String, Object>> thumbs = new ArrayList<>();
+
+                        // Extract left thumb (position 0)
+                        Map<String, Object> leftThumb = processSplitThumb(infosPtr, 0, "left_thumb", splitWidth, splitHeight);
+                        if (leftThumb != null) {
+                            thumbs.add(leftThumb);
+                        }
+
+                        // Extract right thumb (position 1)
+                        Map<String, Object> rightThumb = processSplitThumb(infosPtr, 1, "right_thumb", splitWidth, splitHeight);
+                        if (rightThumb != null) {
+                            thumbs.add(rightThumb);
+                        }
+
+                        // Step 8: Play success sound and set success LED
+                        try {
+                            logger.info("Step 8: Playing success sound and setting success LED");
+                            int successBeepRet = ID_FprCapLoad.ID_FprCapinterface.instance.LIVESCAN_Beep(1); // 1 beep for success
+                            if (successBeepRet == 1) {
+                                logger.info("Success sound played successfully");
+                            } else {
+                                logger.warn("Failed to play success sound, return code: {}", successBeepRet);
+                            }
+
+                            // Set success LED (imageIndex 19 = TWO_THUMB_FINGER_SUCCESS)
+                            int successLedRet = ID_FprCapLoad.ID_FprCapinterface.instance.LIVESCAN_SetLedLight(19);
+                            if (successLedRet == 1) {
+                                logger.info("Success LED set successfully");
+                            } else {
+                                logger.warn("Failed to set success LED, return code: {}", successLedRet);
+                            }
+                        } catch (Exception e) {
+                            logger.warn("Error playing success sound or setting LED: {}", e.getMessage());
+                        }
+
+                        logger.info("Successfully split {} thumbs for channel: {}", thumbs.size(), channel);
+
+                        Map<String, Object> successResponse = new HashMap<>();
+                        successResponse.put("success", true);
+                        successResponse.put("split_type", "two_thumbs");
+                        successResponse.put("thumb_count", thumbs.size());
+                        successResponse.put("thumbs", thumbs);
+                        successResponse.put("split_width", splitWidth);
+                        successResponse.put("split_height", splitHeight);
+                        successResponse.put("original_width", width);
+                        successResponse.put("original_height", height);
+                        successResponse.put("channel", channel);
+                        successResponse.put("captured_at", new Date());
+                        successResponse.put("note", "Following C# sample sequence: Device Init -> Set Window -> Set LED -> Sound -> Capture -> Split -> Success Sound/LED. NO FPSPLIT_Init required!");
+                        successResponse.put("sequence_followed", "C# sample sequence: Device Init -> Set Window -> Set LED -> Sound -> Capture -> Split -> Success Sound/LED");
+
+                        return successResponse;
+                    } else {
+                        logger.warn("Attempt #{} - Found {} fingerprints, expected {}, retrying...", attemptCount, fpNum, expectedFingerprints);
+                        try {
+                            Thread.sleep(100); // Small delay before retry
+                        } catch (InterruptedException e) {
+                            Thread.currentThread().interrupt();
+                            break;
+                        }
+                    }
+                }
+
+                // Timeout reached
+                logger.error("Timeout reached after {} attempts in {}ms while trying to split thumbs. Please ensure both thumbs are clearly visible on the scanner.", attemptCount, timeout);
+                return Map.of(
+                        "success", false,
+                        "error_details", "Timeout reached after " + attemptCount + " attempts in " + timeout + "ms while trying to split thumbs. Please ensure both thumbs are clearly visible on the scanner.",
+                        "timeout_ms", timeout,
+                        "attempts_made", attemptCount,
+                        "expected_fingerprints", expectedFingerprints
+                );
+
+            } finally {
+                // No FPSPLIT cleanup needed since we never initialized it
+                logger.info("No FPSPLIT cleanup needed - library was never initialized (following C# sample pattern)");
+            }
+
+        } catch (UnsatisfiedLinkError e) {
+            logger.error("Native library cannot be loaded. This is likely because you're running on Linux but the SDK requires Windows DLLs. Error: {}", e.getMessage());
+            return Map.of(
+                    "success", false,
+                    "error_details", "Native library cannot be loaded. This SDK requires Windows."
+            );
+        } catch (Exception e) {
+            logger.error("Error splitting two thumbs for channel: {}: {}", channel, e.getMessage(), e);
+            return Map.of(
+                    "success", false,
+                    "error_details", "Error splitting two thumbs: " + e.getMessage()
+            );
+        }
+    }
+
+    /**
+     * Process a split thumb result and store it as an image
+     */
+    private Map<String, Object> processSplitThumb(Pointer infosPtr, int position, String thumbName, int splitWidth, int splitHeight) {
+        try {
+            // CORRECTED: Use FPSPLIT_INFO constants for correct offset calculation
+            // Extract the thumb data from the pointer
+            Pointer thumbPtr = infosPtr.share(FPSPLIT_INFO.getMemoryOffset(position)); // Correct offset calculation
+            byte[] thumbData = thumbPtr.getByteArray(0, splitWidth * splitHeight);
+
+            // Store the thumb as a PNG image
+            String customName = String.format("%s_position_%d", thumbName, position);
+            FingerprintFileStorageService.FileStorageResult storageResult =
+                    fileStorageService.storeFingerprintImageAsImageOrganized(thumbData, "split", customName, splitWidth, splitHeight);
+
+            if (storageResult.isSuccess()) {
+                logger.info("Thumb {} stored successfully: {}", thumbName, storageResult.getFilePath());
+
+                return Map.of(
+                        "thumb_name", thumbName,
+                        "position", position,
+                        "width", splitWidth,
+                        "height", splitHeight,
+                        "quality_score", 75, // Default quality score for split images
+                        "storage_info", Map.of(
+                                "stored", storageResult.isSuccess(),
+                                "file_path", storageResult.getFilePath(),
+                                "filename", storageResult.getFilename(),
+                                "file_size", storageResult.getFileSize()
+                        )
+                );
+            } else {
+                logger.warn("Failed to store thumb {}: {}", thumbName, storageResult.getMessage());
+                return null;
+            }
+
+        } catch (Exception e) {
+            logger.error("Error processing thumb {}: {}", thumbName, e.getMessage());
             return null;
         }
     }
-    
-    // Result classes
-    public static class DeviceInitResult {
-        private final boolean success;
-        private final String message;
-        private final int channel;
-        private final DeviceInfo deviceInfo;
-        
-        public DeviceInitResult(boolean success, String message, int channel, DeviceInfo deviceInfo) {
-            this.success = success;
-            this.message = message;
-            this.channel = channel;
-            this.deviceInfo = deviceInfo;
+
+    /**
+     * Play sound feedback for different operations
+     * @param soundType 1 = single beep (success), 2 = double beep (two-thumb mode), 3 = error beep
+     */
+    public boolean playSound(int soundType) {
+        try {
+            if (!isWindows) {
+                logger.warn("Sound not supported on non-Windows platforms");
+                return false;
+            }
+
+            int ret = ID_FprCapLoad.ID_FprCapinterface.instance.LIVESCAN_Beep(soundType);
+            if (ret == 1) {
+                logger.info("Sound played successfully, type: {}", soundType);
+                return true;
+            } else {
+                logger.warn("Failed to play sound, type: {}, return code: {}", soundType, ret);
+                return false;
+            }
+        } catch (Exception e) {
+            logger.error("Error playing sound, type: {}: {}", soundType, e.getMessage());
+            return false;
         }
-        
-        // Getters
-        public boolean isSuccess() { return success; }
-        public String getMessage() { return message; }
-        public int getChannel() { return channel; }
-        public DeviceInfo getDeviceInfo() { return deviceInfo; }
     }
-    
-    public static class CaptureResult {
-        private final boolean success;
-        private final String message;
-        private final byte[] imageData;
-        private final int width;
-        private final int height;
-        private final int quality;
-        private final int channel;
-        private final FingerprintFileStorageService.FileStorageResult storageResult;
-        
-        public CaptureResult(boolean success, String message, byte[] imageData, int width, int height, int quality, int channel, FingerprintFileStorageService.FileStorageResult storageResult) {
-            this.success = success;
-            this.message = message;
-            this.imageData = imageData;
-            this.width = width;
-            this.height = height;
-            this.quality = quality;
-            this.channel = channel;
-            this.storageResult = storageResult;
+
+    /**
+     * Start real-time fingerprint preview stream (following C# sample pattern)
+     * This creates a continuous loop that captures and processes fingerprint images
+     */
+    public boolean startPreviewStream(int channel, int width, int height) {
+        try {
+            logger.info("Starting real-time preview stream for channel: {} with dimensions: {}x{}", channel, width, height);
+
+            // Check platform compatibility
+            if (!isWindows) {
+                logger.error("Platform not supported. This SDK requires Windows.");
+                return false;
+            }
+
+            // Stop any existing preview stream for this channel
+            stopPreviewStream(channel);
+
+            // Initialize device if not already initialized (following C# sample pattern)
+            if (!isDeviceInitialized(channel)) {
+                logger.info("Initializing device for preview stream (following C# sample pattern)");
+                int deviceRet = ID_FprCapLoad.ID_FprCapinterface.instance.LIVESCAN_Init();
+                if (deviceRet == 1) {
+                    deviceStatus.put(channel, true);
+                    logger.info("Device initialized successfully for preview");
+                } else {
+                    logger.error("Failed to initialize device for preview stream, return code: {}", deviceRet);
+                    return false;
+                }
+            }
+
+            // Set capture window (like C# sample LIVESCAN_SetCaptWindow)
+            logger.info("Setting capture window to {}x{}", width, height);
+            int windowRet = ID_FprCapLoad.ID_FprCapinterface.instance.LIVESCAN_SetCaptWindow(0, 0, 0, width, height);
+            if (windowRet != 1) {
+                logger.warn("Failed to set capture window, return code: {}", windowRet);
+            }
+
+            // Set LED display for preview mode (like C# sample)
+            try {
+                logger.info("Setting LED display for preview mode");
+                int ledRet = ID_FprCapLoad.ID_FprCapinterface.instance.LIVESCAN_SetLedLight(0); // 0 = normal preview
+                if (ledRet == 1) {
+                    logger.info("LED display set successfully for preview mode");
+                } else {
+                    logger.warn("Failed to set LED display, return code: {}", ledRet);
+                }
+            } catch (Exception e) {
+                logger.warn("Error setting LED display: {}", e.getMessage());
+            }
+
+            // Mark preview as running
+            previewRunning.put(channel, true);
+            previewStreams.put(channel, true);
+
+            // Start preview thread (following C# sample pattern)
+            Thread previewThread = new Thread(() -> {
+                logger.info("Preview thread started for channel: {} (following C# sample pattern)", channel);
+
+                try {
+                    byte[] data = new byte[width * height * 2]; // CORRECTED: 2 bytes per pixel like C# sample
+                    long lastFrameTime = System.currentTimeMillis();
+                    int frameCount = 0;
+
+                    while (previewRunning.getOrDefault(channel, false) && deviceStatus.getOrDefault(channel, false)) {
+                        try {
+                            // Capture fingerprint data (like C# sample LIVESCAN_GetFPRawData)
+                            int ret = ID_FprCapLoad.ID_FprCapinterface.instance.LIVESCAN_GetFPRawData(channel, data);
+
+                            if (ret == 1) {
+                                // Check quality (like C# sample MOSAIC_FingerQuality)
+                                int quality = assessFingerprintQuality(data, width, height);
+
+                                // Process and store the frame (like C# sample ShowPreview)
+                                Map<String, Object> frameData = processPreviewFrame(data, width, height, quality);
+                                latestFrames.put(channel, frameData);
+
+                                frameCount++;
+                                long currentTime = System.currentTimeMillis();
+
+                                // Log FPS every 5 seconds
+                                if (currentTime - lastFrameTime >= 5000) {
+                                    double fps = (frameCount * 1000.0) / (currentTime - lastFrameTime);
+                                    logger.debug("Preview FPS for channel {}: {:.1f}, quality: {}", channel, fps, quality);
+                                    frameCount = 0;
+                                    lastFrameTime = currentTime;
+                                }
+                            }
+
+                            // Small delay to achieve ~15 FPS (like C# sample timing)
+                            Thread.sleep(66); // ~15 FPS
+
+                        } catch (InterruptedException e) {
+                            logger.info("Preview thread interrupted for channel: {}", channel);
+                            break;
+                        } catch (Exception e) {
+                            logger.error("Error in preview loop for channel {}: {}", channel, e.getMessage());
+                            Thread.sleep(100); // Wait before retrying
+                        }
+                    }
+
+                } catch (Exception e) {
+                    logger.error("Error in preview thread for channel {}: {}", channel, e.getMessage(), e);
+                } finally {
+                    logger.info("Preview thread ended for channel: {}", channel);
+                    previewRunning.put(channel, false);
+                    previewStreams.put(channel, false);
+                }
+            });
+
+            previewThread.setName("FingerprintPreview-" + channel);
+            previewThreads.put(channel, previewThread);
+            previewThread.start();
+
+            logger.info("Real-time preview stream started successfully for channel: {} (15 FPS target)", channel);
+            return true;
+
+        } catch (Exception e) {
+            logger.error("Error starting preview stream for channel {}: {}", channel, e.getMessage(), e);
+            previewRunning.put(channel, false);
+            previewStreams.put(channel, false);
+            return false;
         }
-        
-        // Getters
-        public boolean isSuccess() { return success; }
-        public String getMessage() { return message; }
-        public byte[] getImageData() { return imageData; }
-        public int getWidth() { return width; }
-        public int getHeight() { return height; }
-        public int getQuality() { return quality; }
-        public int getChannel() { return channel; }
-        public FingerprintFileStorageService.FileStorageResult getStorageResult() { return storageResult; }
     }
-    
-    public static class SplitResult {
-        private final boolean success;
-        private final String message;
-        private final int fingerprintCount;
-        private final Object fingerprints;
-        
-        public SplitResult(boolean success, String message, int fingerprintCount, Object fingerprints) {
-            this.success = success;
-            this.message = message;
-            this.fingerprintCount = fingerprintCount;
-            this.fingerprints = fingerprints;
+
+    /**
+     * Stop real-time fingerprint preview stream
+     */
+    public boolean stopPreviewStream(int channel) {
+        try {
+            logger.info("Stopping real-time preview stream for channel: {}", channel);
+
+            // Mark preview as stopped
+            previewRunning.put(channel, false);
+            previewStreams.put(channel, false);
+
+            // Interrupt and wait for thread to finish
+            Thread previewThread = previewThreads.get(channel);
+            if (previewThread != null && previewThread.isAlive()) {
+                previewThread.interrupt();
+                try {
+                    previewThread.join(2000); // Wait up to 2 seconds
+                } catch (InterruptedException e) {
+                    logger.warn("Interrupted while waiting for preview thread to stop");
+                }
+                previewThreads.remove(channel);
+            }
+
+            // Clear latest frame
+            latestFrames.remove(channel);
+
+            logger.info("Real-time preview stream stopped successfully for channel: {}", channel);
+            return true;
+
+        } catch (Exception e) {
+            logger.error("Error stopping preview stream for channel {}: {}", channel, e.getMessage(), e);
+            return false;
         }
-        
-        // Getters
-        public boolean isSuccess() { return success; }
-        public String getMessage() { return message; }
-        public int getFingerprintCount() { return fingerprintCount; }
-        public Object getFingerprints() { return fingerprints; }
     }
-    
-    public static class DeviceInfo {
-        private final int channelCount;
-        private final int maxWidth;
-        private final int maxHeight;
-        private final String version;
-        private final String description;
-        private final int channel;
-        
-        public DeviceInfo(int channelCount, int maxWidth, int maxHeight, String version, String description, int channel) {
-            this.channelCount = channelCount;
-            this.maxWidth = maxWidth;
-            this.maxHeight = maxHeight;
-            this.version = version;
-            this.description = description;
-            this.channel = channel;
+
+    /**
+     * Get current preview frame data
+     */
+    public Map<String, Object> getCurrentPreviewFrame(int channel) {
+        try {
+            Map<String, Object> frameData = latestFrames.get(channel);
+
+            if (frameData != null) {
+                // Add metadata
+                frameData.put("channel", channel);
+                frameData.put("timestamp", System.currentTimeMillis());
+                frameData.put("stream_active", previewRunning.getOrDefault(channel, false));
+
+                return frameData;
+            } else {
+                return Map.of(
+                        "success", false,
+                        "message", "No preview frame available",
+                        "channel", channel,
+                        "stream_active", previewRunning.getOrDefault(channel, false)
+                );
+            }
+
+        } catch (Exception e) {
+            logger.error("Error getting current preview frame for channel {}: {}", channel, e.getMessage());
+            return Map.of(
+                    "success", false,
+                    "message", "Error getting preview frame: " + e.getMessage(),
+                    "channel", channel
+            );
         }
-        
-        // Getters
-        public int getChannelCount() { return channelCount; }
-        public int getMaxWidth() { return maxWidth; }
-        public int getMaxHeight() { return maxHeight; }
-        public String getVersion() { return version; }
-        public String getDescription() { return description; }
-        public int getChannel() { return channel; }
+    }
+
+    /**
+     * Process preview frame (following C# sample ShowPreview pattern)
+     */
+    private Map<String, Object> processPreviewFrame(byte[] rawData, int width, int height, int quality) {
+        try {
+            // Apply image enhancement for better preview quality
+            byte[] enhancedData = enhanceFingerprintImage(rawData, width, height);
+
+            // Convert enhanced data to base64
+            String base64Image = Base64.getEncoder().encodeToString(enhancedData);
+
+            // Create frame data similar to C# sample
+            Map<String, Object> frameData = new HashMap<>();
+            frameData.put("success", true);
+            frameData.put("image_data", base64Image);
+            frameData.put("width", width);
+            frameData.put("height", height);
+            frameData.put("quality", quality);
+            frameData.put("format", "raw"); // Raw fingerprint data
+            frameData.put("has_finger", quality > 10); // Lower threshold for better detection
+            frameData.put("frame_timestamp", System.currentTimeMillis());
+
+            return frameData;
+
+        } catch (Exception e) {
+            logger.error("Error processing preview frame: {}", e.getMessage());
+            return Map.of(
+                    "success", false,
+                    "message", "Error processing frame: " + e.getMessage()
+            );
+        }
+    }
+
+    /**
+     * Enhance fingerprint image for better preview quality
+     */
+    private byte[] enhanceFingerprintImage(byte[] rawData, int width, int height) {
+        try {
+            byte[] enhanced = new byte[rawData.length];
+
+            // Calculate histogram for adaptive enhancement
+            int[] histogram = new int[256];
+            for (byte b : rawData) {
+                histogram[b & 0xFF]++;
+            }
+
+            // Find min and max values for contrast stretching
+            int min = 0, max = 255;
+            for (int i = 0; i < 256; i++) {
+                if (histogram[i] > 0) {
+                    min = i;
+                    break;
+                }
+            }
+            for (int i = 255; i >= 0; i--) {
+                if (histogram[i] > 0) {
+                    max = i;
+                    break;
+                }
+            }
+
+            // Apply contrast stretching and enhancement
+            double contrast = 1.5; // Increase contrast
+            double brightness = 0.1; // Slight brightness adjustment
+
+            for (int i = 0; i < rawData.length; i++) {
+                int pixel = rawData[i] & 0xFF;
+
+                // Normalize to 0-1 range
+                double normalized = (pixel - min) / (double)(max - min);
+
+                // Apply contrast and brightness
+                normalized = Math.max(0, Math.min(1, normalized * contrast + brightness));
+
+                // Convert back to byte
+                enhanced[i] = (byte) Math.round(normalized * 255);
+            }
+
+            return enhanced;
+
+        } catch (Exception e) {
+            logger.warn("Error enhancing image, returning original: {}", e.getMessage());
+            return rawData;
+        }
+    }
+
+    /**
+     * Check if preview stream is running for a channel
+     */
+    public boolean isPreviewStreamRunning(int channel) {
+        return previewRunning.getOrDefault(channel, false);
+    }
+
+    /**
+     * Test single capture and quality check (for debugging split issues)
+     */
+    public Map<String, Object> testCaptureAndQuality(int channel, int width, int height) {
+        try {
+            logger.info("Testing single capture and quality check for channel: {} with dimensions: {}x{}", channel, width, height);
+
+            // Check platform compatibility
+            if (!isWindows) {
+                return Map.of(
+                        "success", false,
+                        "error_details", "Platform not supported. This SDK requires Windows."
+                );
+            }
+
+            // Initialize device
+            int deviceRet = ID_FprCapLoad.ID_FprCapinterface.instance.LIVESCAN_Init();
+            if (deviceRet != 1) {
+                return Map.of(
+                        "success", false,
+                        "error_details", "Device initialization failed with return code: " + deviceRet
+                );
+            }
+
+            // Initialize MOSAIC library
+            try {
+                int mosaicRet = GamcLoad.instance.MOSAIC_Init();
+                logger.info("MOSAIC library initialization result: {}", mosaicRet);
+            } catch (Exception e) {
+                logger.warn("Error initializing MOSAIC library: {}", e.getMessage());
+            }
+
+            // Set capture window
+            int windowRet = ID_FprCapLoad.ID_FprCapinterface.instance.LIVESCAN_SetCaptWindow(0, 0, 0, width, height);
+            logger.info("Set capture window result: {}", windowRet);
+
+            // Set LED for two-thumb mode
+            int ledRet = ID_FprCapLoad.ID_FprCapinterface.instance.LIVESCAN_SetLedLight(4);
+            logger.info("Set LED result: {}", ledRet);
+
+            // Capture image
+            byte[] rawData = new byte[width * height * 2]; // 2 bytes per pixel
+            int captureRet = ID_FprCapLoad.ID_FprCapinterface.instance.LIVESCAN_GetFPRawData(channel, rawData);
+            logger.info("Capture result: {}", captureRet);
+
+            if (captureRet != 1) {
+                return Map.of(
+                        "success", false,
+                        "error_details", "Failed to capture image. Return code: " + captureRet
+                );
+            }
+
+            // Check quality
+            int quality = assessFingerprintQuality(rawData, width, height);
+            logger.info("Image quality score: {}", quality);
+
+            // Test FPSPLIT_DoSplit with minimal setup
+            int size = FPSPLIT_INFO.getStructureSize();
+            Pointer infosPtr = new Memory(size * 10);
+
+            for (int i = 0; i < 10; i++) {
+                Pointer ptr = infosPtr.share(FPSPLIT_INFO.getMemoryOffset(i));
+                Pointer p = new Memory(300 * 400);
+                ptr.setPointer(0, p);
+            }
+
+            IntByReference fpNumRef = new IntByReference(0);
+            int splitRet = FpSplitLoad.instance.FPSPLIT_DoSplit(
+                    rawData, width, height, 1, 300, 400, fpNumRef, infosPtr
+            );
+
+            int fpNum = fpNumRef.getValue();
+            logger.info("FPSPLIT_DoSplit result: {}, fingerprints found: {}", splitRet, fpNum);
+
+            Map<String, Object> result = new HashMap<>();
+            result.put("success", true);
+            result.put("device_init_result", deviceRet);
+            result.put("mosaic_init_result", "attempted");
+            result.put("capture_window_result", windowRet);
+            result.put("led_result", ledRet);
+            result.put("capture_result", captureRet);
+            result.put("quality_score", quality);
+            result.put("split_result", splitRet);
+            result.put("fingerprints_found", fpNum);
+            result.put("image_size_bytes", rawData.length);
+            result.put("expected_image_size", width * height * 2);
+            result.put("note", "Single capture test completed");
+            return result;
+
+        } catch (Exception e) {
+            logger.error("Error in test capture and quality: {}", e.getMessage(), e);
+            return Map.of(
+                    "success", false,
+                    "error_details", "Error in test: " + e.getMessage()
+            );
+        }
+    }
+
+    /**
+     * Test FPSPLIT library initialization with different dimensions
+     * This helps debug FPSPLIT initialization issues
+     */
+    public Map<String, Object> testFpSplitInitialization() {
+        try {
+            logger.info("Testing FPSPLIT library initialization with different dimensions...");
+
+            // Check platform compatibility
+            if (!isWindows) {
+                return Map.of(
+                        "success", false,
+                        "error_details", "Platform not supported. This SDK requires Windows."
+                );
+            }
+
+            // Check if device is initialized first (following demo app pattern)
+            boolean deviceInitialized = false;
+            try {
+                // Try to initialize device first (like demo app does)
+                logger.info("Attempting to initialize fingerprint device first...");
+                int deviceRet = ID_FprCapLoad.ID_FprCapinterface.instance.LIVESCAN_Init();
+                if (deviceRet == 1) {
+                    deviceInitialized = true;
+                    logger.info("Device initialized successfully before FPSPLIT test");
+                } else {
+                    logger.warn("Device initialization failed with return code: {}", deviceRet);
+                }
+            } catch (Exception e) {
+                logger.warn("Device initialization attempt failed: {}", e.getMessage());
+            }
+
+            // Test different dimension combinations
+            int[][] testDimensions = {
+                    {1600, 1500},  // Original dimensions
+                    {800, 600},    // Smaller dimensions
+                    {640, 480},    // Standard dimensions
+                    {400, 300},    // Small dimensions
+                    {320, 240}     // Very small dimensions
+            };
+
+            List<Map<String, Object>> testResults = new ArrayList<>();
+
+            for (int[] dims : testDimensions) {
+                int width = dims[0];
+                int height = dims[1];
+
+                try {
+                    logger.info("Testing FPSPLIT_Init with dimensions: {}x{}", width, height);
+                    int ret = FpSplitLoad.instance.FPSPLIT_Init(width, height, 1);
+
+                    Map<String, Object> result = Map.of(
+                            "dimensions", width + "x" + height,
+                            "success", ret == 1,
+                            "return_code", ret,
+                            "message", ret == 1 ? "Success" :
+                                    ret == 0 ? "Failed (return code 0)" :
+                                            "Failed (return code " + ret + ")"
+                    );
+
+                    testResults.add(result);
+
+                    if (ret == 1) {
+                        logger.info("FPSPLIT_Init SUCCESS with dimensions: {}x{}", width, height);
+                        // Clean up after successful test
+                        FpSplitLoad.instance.FPSPLIT_Uninit();
+                    } else {
+                        logger.warn("FPSPLIT_Init FAILED with dimensions: {}x{}, return code: {}", width, height, ret);
+                    }
+
+                } catch (Exception e) {
+                    logger.error("Error testing FPSPLIT_Init with dimensions {}x{}: {}", width, height, e.getMessage());
+                    testResults.add(Map.of(
+                            "dimensions", width + "x" + height,
+                            "success", false,
+                            "return_code", -1,
+                            "message", "Exception: " + e.getMessage()
+                    ));
+                }
+            }
+
+            // Find the best working dimensions
+            Map<String, Object> bestResult = testResults.stream()
+                    .filter(r -> (Boolean) r.get("success"))
+                    .findFirst()
+                    .orElse(null);
+
+            // Clean up device if we initialized it
+            if (deviceInitialized) {
+                try {
+                    ID_FprCapLoad.ID_FprCapinterface.instance.LIVESCAN_Close();
+                    logger.info("Device closed after FPSPLIT test");
+                } catch (Exception e) {
+                    logger.warn("Error closing device after test: {}", e.getMessage());
+                }
+            }
+
+            return Map.of(
+                    "success", true,
+                    "device_initialized_for_test", deviceInitialized,
+                    "test_results", testResults,
+                    "best_working_dimensions", bestResult != null ? bestResult.get("dimensions") : "None found",
+                    "recommendation", bestResult != null ?
+                            "Use dimensions: " + bestResult.get("dimensions") :
+                            "Try smaller dimensions like 400x300 or 320x240. Also ensure device is initialized first.",
+                    "note", "FPSPLIT requires device initialization first (like demo app pattern)"
+            );
+
+        } catch (Exception e) {
+            logger.error("Error testing FPSPLIT initialization: {}", e.getMessage(), e);
+            return Map.of(
+                    "success", false,
+                    "error_details", "Error testing FPSPLIT initialization: " + e.getMessage()
+            );
+        }
+    }
+
+    /**
+     * Capture fingerprint template using ZAZ_FpStdLib
+     * This method captures a fingerprint image and generates templates in the specified format
+     */
+    public Map<String, Object> captureFingerprintTemplate(int channel, int width, int height, String format) {
+        try {
+            logger.info("Capturing fingerprint template for channel: {} with dimensions: {}x{}, format: {}",
+                    channel, width, height, format);
+
+            // Check platform compatibility
+            if (!isWindows) {
+                logger.error("Platform not supported. This SDK requires Windows.");
+                return Map.of(
+                        "success", false,
+                        "error_details", "Platform not supported. This SDK requires Windows."
+                );
+            }
+
+            // Initialize ZAZ_FpStdLib device
+            long deviceHandle = ZAZ_FpStdLib.INSTANCE.ZAZ_FpStdLib_OpenDevice();
+            if (deviceHandle == 0) {
+                logger.error("Failed to open ZAZ_FpStdLib device");
+                return Map.of(
+                        "success", false,
+                        "error_details", "Failed to open ZAZ_FpStdLib device"
+                );
+            }
+
+            try {
+                // Calibrate the device
+                int calibRet = ZAZ_FpStdLib.INSTANCE.ZAZ_FpStdLib_Calibration(deviceHandle);
+                if (calibRet != 1) {
+                    logger.warn("Device calibration failed with return code: {}", calibRet);
+                }
+
+                // Capture fingerprint image using the existing capture method
+                Map<String, Object> captureResult = captureFingerprint(channel, width, height);
+                if (!(Boolean) captureResult.get("success")) {
+                    return Map.of(
+                            "success", false,
+                            "error_details", "Failed to capture fingerprint image: " + captureResult.get("error_details")
+                    );
+                }
+
+                // Get the image data from the capture result
+                String base64Image = (String) captureResult.get("image");
+                byte[] imageData = Base64.getDecoder().decode(base64Image);
+
+                // Check image quality using the original image data first (like demo apps)
+                logger.info("Assessing quality for image: {}x{}, data size: {} bytes", width, height, imageData.length);
+                int quality = assessFingerprintQuality(imageData, width, height);
+                logger.info("Fingerprint image quality (original): {}", quality);
+
+                // Use more lenient quality threshold (like demo apps: < 10 is too low, < 50 is acceptable)
+                if (quality < 5) {
+                    return Map.of(
+                            "success", false,
+                            "error_details", "Image quality too low: " + quality + ". Please place finger properly on scanner."
+                    );
+                }
+
+                // Convert image data to the format expected by ZAZ_FpStdLib (256x360)
+                // The ZAZ_FpStdLib expects 256x360 byte array, but we have width*height*2
+                // We need to resize/convert the image data
+                byte[] standardImageData = convertImageToStandardFormat(imageData, width, height);
+
+                // Also check quality with the standard format (for comparison)
+                int standardQuality = ZAZ_FpStdLib.INSTANCE.ZAZ_FpStdLib_GetImageQuality(deviceHandle, standardImageData);
+                logger.info("Fingerprint image quality (standard format): {}", standardQuality);
+
+                Map<String, Object> result = new HashMap<>();
+                result.put("success", true);
+                result.put("quality_score", quality);
+                result.put("template_size", 1024); // Standard template size
+
+                // Generate templates based on format
+                if ("ISO".equals(format)) {
+                    byte[] isoTemplate = new byte[1024];
+                    int isoRet = ZAZ_FpStdLib.INSTANCE.ZAZ_FpStdLib_CreateISOTemplate(deviceHandle, standardImageData, isoTemplate);
+                    if (isoRet > 0) {
+                        String isoTemplateBase64 = Base64.getEncoder().encodeToString(isoTemplate);
+                        result.put("template_data", isoTemplateBase64);
+                        logger.info("ISO template created successfully, return code: {}", isoRet);
+                    } else {
+                        return Map.of(
+                                "success", false,
+                                "error_details", "Failed to create ISO template, return code: " + isoRet
+                        );
+                    }
+                } else if ("ANSI".equals(format)) {
+                    byte[] ansiTemplate = new byte[1024];
+                    int ansiRet = ZAZ_FpStdLib.INSTANCE.ZAZ_FpStdLib_CreateANSITemplate(deviceHandle, standardImageData, ansiTemplate);
+                    if (ansiRet > 0) {
+                        String ansiTemplateBase64 = Base64.getEncoder().encodeToString(ansiTemplate);
+                        result.put("template_data", ansiTemplateBase64);
+                        logger.info("ANSI template created successfully, return code: {}", ansiRet);
+                    } else {
+                        return Map.of(
+                                "success", false,
+                                "error_details", "Failed to create ANSI template, return code: " + ansiRet
+                        );
+                    }
+                } else if ("BOTH".equals(format)) {
+                    // Create both ISO and ANSI templates
+                    byte[] isoTemplate = new byte[1024];
+                    byte[] ansiTemplate = new byte[1024];
+
+                    int isoRet = ZAZ_FpStdLib.INSTANCE.ZAZ_FpStdLib_CreateISOTemplate(deviceHandle, standardImageData, isoTemplate);
+                    int ansiRet = ZAZ_FpStdLib.INSTANCE.ZAZ_FpStdLib_CreateANSITemplate(deviceHandle, standardImageData, ansiTemplate);
+
+                    if (isoRet > 0 && ansiRet > 0) {
+                        String isoTemplateBase64 = Base64.getEncoder().encodeToString(isoTemplate);
+                        String ansiTemplateBase64 = Base64.getEncoder().encodeToString(ansiTemplate);
+                        result.put("iso_template", Map.of(
+                                "format", "ISO",
+                                "template_data", isoTemplateBase64,
+                                "template_size", 1024
+                        ));
+                        result.put("ansi_template", Map.of(
+                                "format", "ANSI",
+                                "template_data", ansiTemplateBase64,
+                                "template_size", 1024
+                        ));
+                        logger.info("Both templates created successfully - ISO: {}, ANSI: {}", isoRet, ansiRet);
+                    } else {
+                        return Map.of(
+                                "success", false,
+                                "error_details", "Failed to create templates - ISO: " + isoRet + ", ANSI: " + ansiRet
+                        );
+                    }
+                } else {
+                    return Map.of(
+                            "success", false,
+                            "error_details", "Invalid template format: " + format + ". Supported formats: ISO, ANSI, BOTH"
+                    );
+                }
+
+                return result;
+
+            } finally {
+                // Close the ZAZ_FpStdLib device
+                ZAZ_FpStdLib.INSTANCE.ZAZ_FpStdLib_CloseDevice(deviceHandle);
+            }
+
+        } catch (UnsatisfiedLinkError e) {
+            logger.error("Native library cannot be loaded. This is likely because you're running on Linux but the SDK requires Windows DLLs. Error: {}", e.getMessage());
+            return Map.of(
+                    "success", false,
+                    "error_details", "Native library cannot be loaded. This SDK requires Windows."
+            );
+        } catch (Exception e) {
+            logger.error("Error capturing fingerprint template for channel: {}: {}", channel, e.getMessage(), e);
+            return Map.of(
+                    "success", false,
+                    "error_details", "Error capturing fingerprint template: " + e.getMessage()
+            );
+        }
+    }
+
+    /**
+     * Convert image data to the standard format expected by ZAZ_FpStdLib (256x360)
+     */
+    private byte[] convertImageToStandardFormat(byte[] imageData, int width, int height) {
+        try {
+            // ZAZ_FpStdLib expects 256x360 = 92160 bytes
+            int standardSize = 256 * 360;
+            byte[] standardImage = new byte[standardSize];
+
+            // Simple resize by sampling or padding
+            if (imageData.length >= standardSize) {
+                // If input is larger, sample it
+                for (int i = 0; i < standardSize; i++) {
+                    int sourceIndex = (i * imageData.length) / standardSize;
+                    standardImage[i] = imageData[sourceIndex];
+                }
+            } else {
+                // If input is smaller, pad it
+                System.arraycopy(imageData, 0, standardImage, 0, Math.min(imageData.length, standardSize));
+            }
+
+            return standardImage;
+
+        } catch (Exception e) {
+            logger.warn("Error converting image to standard format: {}", e.getMessage());
+            // Return a default image if conversion fails
+            return new byte[256 * 360];
+        }
+    }
+
+    /**
+     * Compare two fingerprint templates using ZAZ_FpStdLib
+     * This method compares two templates and returns a similarity score
+     */
+    public Map<String, Object> compareFingerprintTemplates(String template1Base64, String template2Base64, int channel) {
+        try {
+            logger.info("Comparing fingerprint templates for channel: {}", channel);
+
+            // Check platform compatibility
+            if (!isWindows) {
+                logger.error("Platform not supported. This SDK requires Windows.");
+                return Map.of(
+                        "success", false,
+                        "error_details", "Platform not supported. This SDK requires Windows."
+                );
+            }
+
+            // Decode templates
+            byte[] template1 = Base64.getDecoder().decode(template1Base64);
+            byte[] template2 = Base64.getDecoder().decode(template2Base64);
+
+            // Validate template sizes
+            if (template1.length != 1024 || template2.length != 1024) {
+                return Map.of(
+                        "success", false,
+                        "error_details", "Invalid template size. Expected 1024 bytes, got: " +
+                                template1.length + " and " + template2.length
+                );
+            }
+
+            // Initialize ZAZ_FpStdLib device
+            long deviceHandle = ZAZ_FpStdLib.INSTANCE.ZAZ_FpStdLib_OpenDevice();
+            if (deviceHandle == 0) {
+                logger.error("Failed to open ZAZ_FpStdLib device");
+                return Map.of(
+                        "success", false,
+                        "error_details", "Failed to open ZAZ_FpStdLib device"
+                );
+            }
+
+            try {
+                // Compare templates
+                int similarityScore = ZAZ_FpStdLib.INSTANCE.ZAZ_FpStdLib_CompareTemplates(deviceHandle, template1, template2);
+
+                // Determine if it's a match (threshold can be adjusted)
+                int matchThreshold = 50; // Adjustable threshold
+                boolean isMatch = similarityScore >= matchThreshold;
+
+                logger.info("Template comparison completed - Score: {}, Threshold: {}, Match: {}",
+                        similarityScore, matchThreshold, isMatch);
+
+                return Map.of(
+                        "success", true,
+                        "similarity_score", similarityScore,
+                        "match_threshold", matchThreshold,
+                        "is_match", isMatch
+                );
+
+            } finally {
+                // Close the ZAZ_FpStdLib device
+                ZAZ_FpStdLib.INSTANCE.ZAZ_FpStdLib_CloseDevice(deviceHandle);
+            }
+
+        } catch (Exception e) {
+            logger.error("Error comparing fingerprint templates for channel: {}: {}", channel, e.getMessage(), e);
+            return Map.of(
+                    "success", false,
+                    "error_details", "Error comparing fingerprint templates: " + e.getMessage()
+            );
+        }
+    }
+
+    /**
+     * Search for a template in a collection of templates using ZAZ_FpStdLib
+     * This method searches for a template in an array of stored templates
+     */
+    public Map<String, Object> searchFingerprintTemplates(String searchTemplateBase64, String templateArrayBase64,
+                                                          int arrayCount, int matchThreshold, int channel) {
+        try {
+            logger.info("Searching fingerprint templates for channel: {}, array count: {}, threshold: {}",
+                    channel, arrayCount, matchThreshold);
+
+            // Check platform compatibility
+            if (!isWindows) {
+                logger.error("Platform not supported. This SDK requires Windows.");
+                return Map.of(
+                        "success", false,
+                        "error_details", "Platform not supported. This SDK requires Windows."
+                );
+            }
+
+            // Decode templates
+            byte[] searchTemplate = Base64.getDecoder().decode(searchTemplateBase64);
+            byte[] templateArray = Base64.getDecoder().decode(templateArrayBase64);
+
+            // Validate template sizes
+            if (searchTemplate.length != 1024) {
+                return Map.of(
+                        "success", false,
+                        "error_details", "Invalid search template size. Expected 1024 bytes, got: " + searchTemplate.length
+                );
+            }
+
+            int expectedArraySize = arrayCount * 1024;
+            if (templateArray.length != expectedArraySize) {
+                return Map.of(
+                        "success", false,
+                        "error_details", "Invalid template array size. Expected " + expectedArraySize +
+                                " bytes, got: " + templateArray.length
+                );
+            }
+
+            // Initialize ZAZ_FpStdLib device
+            long deviceHandle = ZAZ_FpStdLib.INSTANCE.ZAZ_FpStdLib_OpenDevice();
+            if (deviceHandle == 0) {
+                logger.error("Failed to open ZAZ_FpStdLib device");
+                return Map.of(
+                        "success", false,
+                        "error_details", "Failed to open ZAZ_FpStdLib device"
+                );
+            }
+
+            try {
+                // Search templates
+                int searchResult = ZAZ_FpStdLib.INSTANCE.ZAZ_FpStdLib_SearchingANSITemplates(
+                        deviceHandle, searchTemplate, arrayCount, templateArray, matchThreshold);
+
+                // Determine if a match was found
+                boolean matchFound = searchResult > 0;
+                int bestMatchScore = searchResult;
+
+                logger.info("Template search completed - Result: {}, Threshold: {}, Match Found: {}",
+                        searchResult, matchThreshold, matchFound);
+
+                return Map.of(
+                        "success", true,
+                        "search_result", searchResult,
+                        "best_match_score", bestMatchScore,
+                        "match_found", matchFound
+                );
+
+            } finally {
+                // Close the ZAZ_FpStdLib device
+                ZAZ_FpStdLib.INSTANCE.ZAZ_FpStdLib_CloseDevice(deviceHandle);
+            }
+
+        } catch (Exception e) {
+            logger.error("Error searching fingerprint templates for channel: {}: {}", channel, e.getMessage(), e);
+            return Map.of(
+                    "success", false,
+                    "error_details", "Error searching fingerprint templates: " + e.getMessage()
+            );
+        }
     }
 }
-
-
-

@@ -1,0 +1,845 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>🔍 BIO600 Fingerprint Real-Time Preview System</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: Arial, sans-serif;
+            background: #f5f5dc;
+            min-height: 100vh;
+            color: #000;
+            margin: 0;
+            padding: 20px;
+        }
+        
+        .container {
+            max-width: 1000px;
+            margin: 0 auto;
+            background: #f5f5dc;
+            border: 1px solid #d0d0d0;
+            padding: 20px;
+        }
+        
+        .header {
+            background: #f5f5dc;
+            color: #000;
+            padding: 20px;
+            text-align: center;
+            border-bottom: 1px solid #d0d0d0;
+        }
+        
+        .header h1 {
+            margin: 0;
+            font-size: 24px;
+            font-weight: normal;
+            color: #000;
+        }
+        
+        .header p {
+            margin: 10px 0 0 0;
+            font-size: 14px;
+            color: #000;
+        }
+        
+        .main-content {
+            display: grid;
+            grid-template-columns: 1fr 300px;
+            gap: 20px;
+            padding: 20px;
+        }
+        
+        .preview-section {
+            background: #f5f5dc;
+            border: 1px solid #d0d0d0;
+            padding: 20px;
+        }
+        
+        .preview-container {
+            position: relative;
+            background: #f5f5dc;
+            border: 1px solid #d0d0d0;
+            margin-bottom: 20px;
+        }
+        
+        #previewCanvas {
+            width: 640px;
+            height: 600px;
+            display: block;
+            background: #ffffff;
+            border: 1px solid #d0d0d0;
+            margin: 0 auto;
+        }
+        
+        .preview-overlay {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            background: rgba(245, 245, 220, 0.9);
+            color: #000;
+            padding: 10px;
+            border: 1px solid #d0d0d0;
+            font-family: Arial, sans-serif;
+            font-size: 12px;
+        }
+        
+        .preview-overlay div {
+            margin: 3px 0;
+        }
+        
+        .controls-section {
+            background: #f5f5dc;
+            border: 1px solid #d0d0d0;
+            padding: 20px;
+        }
+        
+        .control-group {
+            margin-bottom: 20px;
+        }
+        
+        .control-group label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: 600;
+            color: #2c3e50;
+        }
+        
+        .control-group input, .control-group select {
+            width: 100%;
+            padding: 10px;
+            border: 2px solid #e9ecef;
+            border-radius: 5px;
+            font-size: 14px;
+            transition: border-color 0.3s;
+        }
+        
+        .control-group input:focus, .control-group select:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+        
+        .button-group {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+        
+        .btn {
+            padding: 8px 16px;
+            border: 1px solid #d0d0d0;
+            background: #f5f5dc;
+            color: #000;
+            font-size: 12px;
+            font-weight: normal;
+            cursor: pointer;
+            margin: 2px;
+            width: 100%;
+        }
+        
+        .btn:hover {
+            background: #e0e0e0;
+        }
+        
+        .btn:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+        
+        .status-section {
+            background: #f5f5dc;
+            border: 1px solid #d0d0d0;
+            padding: 15px;
+            margin-top: 15px;
+        }
+        
+        .status-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 10px 0;
+            border-bottom: 1px solid #e9ecef;
+        }
+        
+        .status-item:last-child {
+            border-bottom: none;
+        }
+        
+        .status-label {
+            font-weight: 600;
+            color: #2c3e50;
+        }
+        
+        .status-value {
+            padding: 5px 10px;
+            border-radius: 15px;
+            font-size: 12px;
+            font-weight: 600;
+            text-transform: uppercase;
+        }
+        
+        .status-connected {
+            background: #d4edda;
+            color: #155724;
+        }
+        
+        .status-disconnected {
+            background: #f8d7da;
+            color: #721c24;
+        }
+        
+        .status-running {
+            background: #d1ecf1;
+            color: #0c5460;
+        }
+        
+        .status-stopped {
+            background: #f8d7da;
+            color: #721c24;
+        }
+        
+        .quality-indicator {
+            display: inline-block;
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            margin-left: 10px;
+        }
+        
+        .quality-excellent { background: #28a745; }
+        .quality-good { background: #ffc107; }
+        .quality-poor { background: #dc3545; }
+        .quality-none { background: #6c757d; }
+        
+        .fps-counter {
+            font-family: 'Courier New', monospace;
+            font-size: 16px;
+            color: #00ff88;
+            font-weight: bold;
+            text-shadow: 0 0 10px rgba(0,255,136,0.8);
+            animation: pulse 2s infinite;
+        }
+        
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.7; }
+        }
+        
+        .status-indicator {
+            display: inline-block;
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            margin-right: 8px;
+            animation: blink 1.5s infinite;
+        }
+        
+        @keyframes blink {
+            0%, 50% { opacity: 1; }
+            51%, 100% { opacity: 0.3; }
+        }
+        
+        .status-connected .status-indicator {
+            background: #00ff88;
+            box-shadow: 0 0 10px rgba(0,255,136,0.5);
+        }
+        
+        .status-disconnected .status-indicator {
+            background: #ff416c;
+            box-shadow: 0 0 10px rgba(255,65,108,0.5);
+        }
+        
+        .status-running .status-indicator {
+            background: #00b09b;
+            box-shadow: 0 0 10px rgba(0,176,155,0.5);
+        }
+        
+        .status-stopped .status-indicator {
+            background: #ffc107;
+            box-shadow: 0 0 10px rgba(255,193,7,0.5);
+        }
+        
+        .log-section {
+            background: #2c3e50;
+            color: #ecf0f1;
+            border-radius: 10px;
+            padding: 20px;
+            margin-top: 20px;
+            max-height: 200px;
+            overflow-y: auto;
+        }
+        
+        .log-entry {
+            font-family: monospace;
+            font-size: 12px;
+            margin-bottom: 5px;
+            padding: 5px;
+            border-radius: 3px;
+        }
+        
+        .log-info { background: rgba(52, 152, 219, 0.2); }
+        .log-success { background: rgba(46, 204, 113, 0.2); }
+        .log-warning { background: rgba(241, 196, 15, 0.2); }
+        .log-error { background: rgba(231, 76, 60, 0.2); }
+        
+        @media (max-width: 768px) {
+            .main-content {
+                grid-template-columns: 1fr;
+            }
+            
+            .header h1 {
+                font-size: 2em;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>BIO600 Fingerprint Preview</h1>
+            <p>Real-time fingerprint capture and preview system</p>
+        </div>
+        
+        <div class="main-content">
+            <div class="preview-section">
+                <div class="preview-container">
+                    <canvas id="previewCanvas" width="640" height="600"></canvas>
+                <div class="preview-overlay">
+                    <div>FPS: <span id="fpsCounter" class="fps-counter">0</span></div>
+                    <div>Quality: <span id="qualityValue">0</span><span id="qualityIndicator" class="quality-indicator quality-none"></span></div>
+                    <div>Size: <span id="imageSize">0x0</span></div>
+                    <div>Finger: <span id="fingerStatus">Not Detected</span></div>
+                </div>
+                </div>
+                
+                <div class="button-group">
+                    <button id="startPreviewBtn" class="btn">Start Preview</button>
+                    <button id="stopPreviewBtn" class="btn" disabled>Stop Preview</button>
+                    <button id="captureBtn" class="btn" disabled>Save Image</button>
+                    <button id="captureISOBtn" class="btn" disabled>Capture ISO Template</button>
+                    <button id="captureANSIBtn" class="btn" disabled>Capture ANSI Template</button>
+                    <button id="captureBothBtn" class="btn" disabled>Capture Both Templates</button>
+                </div>
+            </div>
+            
+            <div class="controls-section">
+                <div class="control-group">
+                    <label for="channelSelect">Channel:</label>
+                    <select id="channelSelect">
+                        <option value="0">Channel 0</option>
+                        <option value="1">Channel 1</option>
+                        <option value="2">Channel 2</option>
+                    </select>
+                </div>
+                
+                <div class="control-group">
+                    <label for="widthInput">Width:</label>
+                    <input type="number" id="widthInput" value="1600" min="100" max="2000">
+                </div>
+                
+                <div class="control-group">
+                    <label for="heightInput">Height:</label>
+                    <input type="number" id="heightInput" value="1500" min="100" max="2000">
+                </div>
+                
+                <div class="control-group">
+                    <label for="templateFormatSelect">Template Format:</label>
+                    <select id="templateFormatSelect">
+                        <option value="ISO">ISO/IEC 19794-2</option>
+                        <option value="ANSI">ANSI/NIST-ITL 1-2000</option>
+                        <option value="BOTH">Both Formats</option>
+                    </select>
+                </div>
+                
+                <div class="status-section">
+                    <div class="status-item">
+                        <span class="status-label">Connection:</span>
+                        <span id="connectionStatus" class="status-value status-disconnected">Disconnected</span>
+                    </div>
+                    <div class="status-item">
+                        <span class="status-label">Preview:</span>
+                        <span id="previewStatus" class="status-value status-stopped">Stopped</span>
+                    </div>
+                    <div class="status-item">
+                        <span class="status-label">Device:</span>
+                        <span id="deviceStatus" class="status-value status-disconnected">Unknown</span>
+                    </div>
+                </div>
+                
+                <div class="template-section" style="margin-top: 15px; padding: 15px; background: #f5f5dc; border: 1px solid #d0d0d0;">
+                    <h4 style="margin: 0 0 10px 0; color: #2c3e50;">Template Information</h4>
+                    <div id="templateInfo" style="font-size: 12px; color: #666;">
+                        <div>Format: <span id="templateFormat">None</span></div>
+                        <div>Size: <span id="templateSize">0 bytes</span></div>
+                        <div>Quality: <span id="templateQuality">0</span></div>
+                        <div>Status: <span id="templateStatus">Ready</span></div>
+                    </div>
+                    <div style="margin-top: 10px;">
+                        <button id="downloadTemplateBtn" class="btn" disabled style="width: 100%; font-size: 11px;">Download Template</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <div class="log-section">
+            <h3 style="margin-top: 0;">System Log</h3>
+            <div id="logContainer"></div>
+        </div>
+    </div>
+
+    <script>
+        // BIO600 Fingerprint Preview System
+        // Improved to match Sample Code quality and functionality
+        // Key improvements:
+        // - Fixed canvas dimensions (640x600) to match fingerprint aspect ratio (16:15)
+        // - Implemented vertical flip (critical for proper display)
+        // - Simplified image processing to match C# Sample Code approach
+        // - Better scaling and aspect ratio handling
+        // - Professional quality display matching the original application
+        class FingerprintPreview {
+            constructor() {
+                this.ws = null;
+                this.canvas = document.getElementById('previewCanvas');
+                this.ctx = this.canvas.getContext('2d');
+                this.isPreviewRunning = false;
+                this.frameCount = 0;
+                this.lastFrameTime = Date.now();
+                this.fps = 0;
+                
+                this.initializeElements();
+                this.setupEventListeners();
+                this.connectWebSocket();
+            }
+            
+            initializeElements() {
+                this.startBtn = document.getElementById('startPreviewBtn');
+                this.stopBtn = document.getElementById('stopPreviewBtn');
+                this.captureBtn = document.getElementById('captureBtn');
+                this.captureISOBtn = document.getElementById('captureISOBtn');
+                this.captureANSIBtn = document.getElementById('captureANSIBtn');
+                this.captureBothBtn = document.getElementById('captureBothBtn');
+                this.downloadTemplateBtn = document.getElementById('downloadTemplateBtn');
+                this.channelSelect = document.getElementById('channelSelect');
+                this.widthInput = document.getElementById('widthInput');
+                this.heightInput = document.getElementById('heightInput');
+                this.templateFormatSelect = document.getElementById('templateFormatSelect');
+                this.connectionStatus = document.getElementById('connectionStatus');
+                this.previewStatus = document.getElementById('previewStatus');
+                this.deviceStatus = document.getElementById('deviceStatus');
+                this.fpsCounter = document.getElementById('fpsCounter');
+                this.qualityValue = document.getElementById('qualityValue');
+                this.qualityIndicator = document.getElementById('qualityIndicator');
+                this.imageSize = document.getElementById('imageSize');
+                this.templateFormat = document.getElementById('templateFormat');
+                this.templateSize = document.getElementById('templateSize');
+                this.templateQuality = document.getElementById('templateQuality');
+                this.templateStatus = document.getElementById('templateStatus');
+                this.logContainer = document.getElementById('logContainer');
+                
+                // Store current template data
+                this.currentTemplate = null;
+            }
+            
+            setupEventListeners() {
+                this.startBtn.addEventListener('click', () => this.startPreview());
+                this.stopBtn.addEventListener('click', () => this.stopPreview());
+                this.captureBtn.addEventListener('click', () => this.captureImage());
+                this.captureISOBtn.addEventListener('click', () => this.captureTemplate('ISO'));
+                this.captureANSIBtn.addEventListener('click', () => this.captureTemplate('ANSI'));
+                this.captureBothBtn.addEventListener('click', () => this.captureTemplate('BOTH'));
+                this.downloadTemplateBtn.addEventListener('click', () => this.downloadTemplate());
+            }
+            
+            connectWebSocket() {
+                const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+                const wsUrl = `${protocol}//${window.location.host}/ws/fingerprint`;
+                
+                this.log('Connecting to WebSocket...', 'info');
+                
+                this.ws = new WebSocket(wsUrl);
+                
+                this.ws.onopen = () => {
+                    this.log('WebSocket connected', 'success');
+                    this.updateConnectionStatus(true);
+                };
+                
+                this.ws.onmessage = (event) => {
+                    this.handleMessage(JSON.parse(event.data));
+                };
+                
+                this.ws.onclose = () => {
+                    this.log('WebSocket disconnected', 'warning');
+                    this.updateConnectionStatus(false);
+                    this.updatePreviewStatus(false);
+                    
+                    // Attempt to reconnect after 3 seconds
+                    setTimeout(() => {
+                        if (!this.ws || this.ws.readyState === WebSocket.CLOSED) {
+                            this.connectWebSocket();
+                        }
+                    }, 3000);
+                };
+                
+                this.ws.onerror = (error) => {
+                    this.log('WebSocket error: ' + error, 'error');
+                };
+            }
+            
+            handleMessage(message) {
+                const { type, data } = message;
+                
+                switch (type) {
+                    case 'connection':
+                        this.log(`Connected: ${data.message}`, 'success');
+                        break;
+                        
+                    case 'preview_started':
+                        this.log(`Preview started: ${data.width}x${data.height} @ ${data.fps} FPS`, 'success');
+                        this.updatePreviewStatus(true);
+                        this.startBtn.disabled = true;
+                        this.stopBtn.disabled = false;
+                        this.captureBtn.disabled = false;
+                        this.captureISOBtn.disabled = false;
+                        this.captureANSIBtn.disabled = false;
+                        this.captureBothBtn.disabled = false;
+                        break;
+                        
+                    case 'preview_stopped':
+                        this.log('Preview stopped', 'info');
+                        this.updatePreviewStatus(false);
+                        this.startBtn.disabled = false;
+                        this.stopBtn.disabled = true;
+                        this.captureBtn.disabled = true;
+                        this.captureISOBtn.disabled = true;
+                        this.captureANSIBtn.disabled = true;
+                        this.captureBothBtn.disabled = true;
+                        break;
+                        
+                    case 'preview':
+                        this.displayPreviewFrame(data);
+                        break;
+                        
+                    case 'capture_result':
+                        this.log(`Image captured: Quality ${data.quality}`, 'success');
+                        this.downloadImage(data.imageData, `fingerprint_${Date.now()}.png`);
+                        break;
+                        
+                    case 'template_result':
+                        this.handleTemplateResult(data);
+                        break;
+                        
+                    case 'status':
+                        this.updateDeviceStatus(data);
+                        break;
+                        
+                    case 'error':
+                        this.log(`Error: ${data.message}`, 'error');
+                        break;
+                }
+            }
+            
+            displayPreviewFrame(data) {
+                // Update FPS counter
+                this.frameCount++;
+                const now = Date.now();
+                if (now - this.lastFrameTime >= 1000) {
+                    this.fps = Math.round((this.frameCount * 1000) / (now - this.lastFrameTime));
+                    this.fpsCounter.textContent = this.fps;
+                    this.frameCount = 0;
+                    this.lastFrameTime = now;
+                }
+                
+                // Update quality indicator
+                this.qualityValue.textContent = data.quality;
+                this.updateQualityIndicator(data.quality);
+                
+                // Update image size
+                this.imageSize.textContent = `${data.width}x${data.height}`;
+                
+                // Update finger detection status
+                const fingerStatus = document.getElementById('fingerStatus');
+                if (data.has_finger) {
+                    fingerStatus.textContent = 'Detected';
+                } else {
+                    fingerStatus.textContent = 'Not Detected';
+                }
+                
+                // Display image on canvas
+                if (data.imageData) {
+                    this.drawImageFromBase64(data.imageData, data.width, data.height);
+                }
+            }
+            
+            drawImageFromBase64(base64Data, width, height) {
+                // Convert base64 to bytes
+                const binaryString = atob(base64Data);
+                const bytes = new Uint8Array(binaryString.length);
+                for (let i = 0; i < binaryString.length; i++) {
+                    bytes[i] = binaryString.charCodeAt(i);
+                }
+                
+                // CRITICAL: Apply vertical flip (exactly like C# Sample Code lines 308-319)
+                for (let y = 0; y < height / 2; y++) {
+                    const swapY = height - y - 1;
+                    for (let x = 0; x < width; x++) {
+                        const index = y * width + x;
+                        const swapIndex = swapY * width + x;
+                        const temp = bytes[index];
+                        bytes[index] = bytes[swapIndex];
+                        bytes[swapIndex] = temp;
+                    }
+                }
+                
+                // Create ImageData with proper dimensions
+                const imageData = this.ctx.createImageData(width, height);
+                const data = imageData.data;
+                
+                // Simple image processing for black fingerprints on white background
+                for (let i = 0; i < bytes.length; i++) {
+                    let gray = bytes[i];
+                    
+                    // Apply contrast enhancement
+                    gray = Math.max(0, Math.min(255, (gray - 128) * 2.0 + 128));
+                    
+                    // Keep original colors - black fingerprint on white background
+                    // No color inversion needed
+                    
+                    const pixelIndex = i * 4;
+                    data[pixelIndex] = gray;     // R
+                    data[pixelIndex + 1] = gray; // G
+                    data[pixelIndex + 2] = gray; // B
+                    data[pixelIndex + 3] = 255;  // A
+                }
+                
+                // Clear canvas with pure white background
+                this.ctx.fillStyle = '#ffffff';
+                this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
+                
+                // Calculate proper scaling to maintain aspect ratio
+                const scaleX = this.canvas.width / width;
+                const scaleY = this.canvas.height / height;
+                const scale = Math.min(scaleX, scaleY) * 0.95; // 95% to add some padding
+                
+                const scaledWidth = Math.floor(width * scale);
+                const scaledHeight = Math.floor(height * scale);
+                
+                // Center the image
+                const offsetX = (this.canvas.width - scaledWidth) / 2;
+                const offsetY = (this.canvas.height - scaledHeight) / 2;
+                
+                // Create a temporary canvas for scaling
+                const tempCanvas = document.createElement('canvas');
+                tempCanvas.width = width;
+                tempCanvas.height = height;
+                const tempCtx = tempCanvas.getContext('2d');
+                tempCtx.putImageData(imageData, 0, 0);
+                
+                // Draw scaled image
+                this.ctx.drawImage(tempCanvas, 0, 0, width, height, 
+                    offsetX, offsetY, scaledWidth, scaledHeight);
+                
+                // Add simple border
+                this.ctx.strokeStyle = '#d0d0d0';
+                this.ctx.lineWidth = 1;
+                this.ctx.strokeRect(offsetX, offsetY, scaledWidth, scaledHeight);
+            }
+            
+            updateQualityIndicator(quality) {
+                this.qualityIndicator.className = 'quality-indicator ';
+                if (quality >= 80) {
+                    this.qualityIndicator.classList.add('quality-excellent');
+                } else if (quality >= 60) {
+                    this.qualityIndicator.classList.add('quality-good');
+                } else if (quality > 0) {
+                    this.qualityIndicator.classList.add('quality-poor');
+                } else {
+                    this.qualityIndicator.classList.add('quality-none');
+                }
+            }
+            
+            startPreview() {
+                if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+                    this.log('WebSocket not connected', 'error');
+                    return;
+                }
+                
+                const message = {
+                    command: 'start_preview',
+                    channel: parseInt(this.channelSelect.value),
+                    width: parseInt(this.widthInput.value),
+                    height: parseInt(this.heightInput.value)
+                };
+                
+                this.sendMessage(message);
+            }
+            
+            stopPreview() {
+                if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+                    this.log('WebSocket not connected', 'error');
+                    return;
+                }
+                
+                const message = { command: 'stop_preview' };
+                this.sendMessage(message);
+            }
+            
+            captureImage() {
+                if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+                    this.log('WebSocket not connected', 'error');
+                    return;
+                }
+                
+                const message = {
+                    command: 'capture',
+                    channel: parseInt(this.channelSelect.value),
+                    width: parseInt(this.widthInput.value),
+                    height: parseInt(this.heightInput.value)
+                };
+                
+                this.sendMessage(message);
+            }
+            
+            captureTemplate(format) {
+                if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+                    this.log('WebSocket not connected', 'error');
+                    return;
+                }
+                
+                this.templateStatus.textContent = 'Capturing...';
+                this.log(`Capturing ${format} template...`, 'info');
+                
+                const message = {
+                    command: 'capture_template',
+                    format: format,
+                    channel: parseInt(this.channelSelect.value),
+                    width: parseInt(this.widthInput.value),
+                    height: parseInt(this.heightInput.value)
+                };
+                
+                this.sendMessage(message);
+            }
+            
+            handleTemplateResult(data) {
+                if (data.success) {
+                    this.currentTemplate = data;
+                    this.templateFormat.textContent = data.template_format || 'Multiple';
+                    this.templateSize.textContent = data.template_size ? `${data.template_size} bytes` : 'Unknown';
+                    this.templateQuality.textContent = data.quality_score || '0';
+                    this.templateStatus.textContent = 'Captured';
+                    this.downloadTemplateBtn.disabled = false;
+                    
+                    this.log(`Template captured successfully: ${data.template_format || 'Multiple'} format, Quality: ${data.quality_score}`, 'success');
+                } else {
+                    this.templateStatus.textContent = 'Failed';
+                    this.downloadTemplateBtn.disabled = true;
+                    this.log(`Template capture failed: ${data.error_details || data.message}`, 'error');
+                }
+            }
+            
+            downloadTemplate() {
+                if (!this.currentTemplate) {
+                    this.log('No template to download', 'warning');
+                    return;
+                }
+                
+                const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+                const format = this.currentTemplate.template_format || 'template';
+                
+                if (this.currentTemplate.template_data) {
+                    // Single template
+                    const filename = `fingerprint_${format}_${timestamp}.bin`;
+                    this.downloadBinaryData(this.currentTemplate.template_data, filename);
+                    this.log(`Downloaded ${format} template: ${filename}`, 'success');
+                } else if (this.currentTemplate.iso_template && this.currentTemplate.ansi_template) {
+                    // Both templates
+                    const isoTemplate = this.currentTemplate.iso_template.template_data;
+                    const ansiTemplate = this.currentTemplate.ansi_template.template_data;
+                    
+                    const isoFilename = `fingerprint_ISO_${timestamp}.bin`;
+                    const ansiFilename = `fingerprint_ANSI_${timestamp}.bin`;
+                    
+                    this.downloadBinaryData(isoTemplate, isoFilename);
+                    this.downloadBinaryData(ansiTemplate, ansiFilename);
+                    
+                    this.log(`Downloaded both templates: ${isoFilename}, ${ansiFilename}`, 'success');
+                } else {
+                    this.log('Invalid template data for download', 'error');
+                }
+            }
+            
+            downloadBinaryData(base64Data, filename) {
+                const binaryString = atob(base64Data);
+                const bytes = new Uint8Array(binaryString.length);
+                for (let i = 0; i < binaryString.length; i++) {
+                    bytes[i] = binaryString.charCodeAt(i);
+                }
+                
+                const blob = new Blob([bytes], { type: 'application/octet-stream' });
+                const url = URL.createObjectURL(blob);
+                
+                const link = document.createElement('a');
+                link.href = url;
+                link.download = filename;
+                document.body.appendChild(link);
+                link.click();
+                document.body.removeChild(link);
+                
+                URL.revokeObjectURL(url);
+            }
+            
+            sendMessage(message) {
+                if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+                    this.ws.send(JSON.stringify(message));
+                }
+            }
+            
+            updateConnectionStatus(connected) {
+                this.connectionStatus.textContent = connected ? 'Connected' : 'Disconnected';
+            }
+            
+            updatePreviewStatus(running) {
+                this.previewStatus.textContent = running ? 'Running' : 'Stopped';
+            }
+            
+            updateDeviceStatus(data) {
+                this.deviceStatus.textContent = data.supported ? 'Supported' : 'Not Supported';
+            }
+            
+            downloadImage(base64Data, filename) {
+                const link = document.createElement('a');
+                link.href = 'data:image/png;base64,' + base64Data;
+                link.download = filename;
+                document.body.appendChild(link);
+                link.click();
+                document.body.removeChild(link);
+            }
+            
+            log(message, type = 'info') {
+                const timestamp = new Date().toLocaleTimeString();
+                const logEntry = document.createElement('div');
+                logEntry.className = `log-entry log-${type}`;
+                logEntry.textContent = `[${timestamp}] ${message}`;
+                
+                this.logContainer.appendChild(logEntry);
+                this.logContainer.scrollTop = this.logContainer.scrollHeight;
+                
+                // Keep only last 50 log entries
+                while (this.logContainer.children.length > 50) {
+                    this.logContainer.removeChild(this.logContainer.firstChild);
+                }
+            }
+        }
+        
+        // Initialize the application when the page loads
+        document.addEventListener('DOMContentLoaded', () => {
+            new FingerprintPreview();
+        });
+    </script>
+</body>
+</html>
