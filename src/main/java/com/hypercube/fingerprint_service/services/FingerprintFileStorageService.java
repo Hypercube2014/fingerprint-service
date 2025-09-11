@@ -5,6 +5,9 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
+import javax.imageio.ImageIO;
+import java.awt.image.BufferedImage;
+import java.awt.image.DataBufferByte;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
@@ -35,8 +38,11 @@ public class FingerprintFileStorageService {
     @Value("${fingerprint.storage.split-path:split}")
     private String splitPath;
     
-    @Value("${fingerprint.storage.file-extension:.raw}")
+    @Value("${fingerprint.storage.file-extension:.png}")
     private String fileExtension;
+    
+    @Value("${fingerprint.storage.image-format:PNG}")
+    private String imageFormat;
     
     @Value("${fingerprint.storage.create-timestamp:true}")
     private boolean createTimestamp;
@@ -211,6 +217,54 @@ public class FingerprintFileStorageService {
     }
     
     /**
+     * Store BufferedImage as organized image file
+     */
+    public FileStorageResult storeBufferedImageAsImageOrganized(BufferedImage image, String imageType, String customName) {
+        try {
+            // Create date-based directory structure
+            LocalDateTime now = LocalDateTime.now();
+            String yearMonth = now.format(DateTimeFormatter.ofPattern("yyyy/MM"));
+            String day = now.format(DateTimeFormatter.ofPattern("dd"));
+            
+            // Determine storage path based on image type
+            String storagePath = getStoragePathForType(imageType);
+            
+            // Create full directory path with date structure
+            Path fullPath = Paths.get(baseStoragePath, storagePath, yearMonth, day);
+            Files.createDirectories(fullPath);
+            
+            // Generate unique filename
+            String filename = generateUniqueFilename(imageType, customName);
+            Path filePath = fullPath.resolve(filename);
+            
+            // Write image file
+            boolean success = ImageIO.write(image, imageFormat, filePath.toFile());
+            
+            if (success) {
+                logger.info("BufferedImage stored in organized structure: {}", filePath);
+                
+                return new FileStorageResult(
+                    true,
+                    "BufferedImage stored successfully",
+                    filePath.toString(),
+                    filename,
+                    Files.size(filePath),
+                    imageType
+                );
+            } else {
+                String errorMsg = "Failed to write BufferedImage to file: " + filePath;
+                logger.error(errorMsg);
+                return new FileStorageResult(false, errorMsg, null, null, 0, imageType);
+            }
+            
+        } catch (Exception e) {
+            String errorMsg = "Error storing BufferedImage: " + e.getMessage();
+            logger.error(errorMsg, e);
+            return new FileStorageResult(false, errorMsg, null, null, 0, imageType);
+        }
+    }
+
+    /**
      * Create organized directory structure with date-based subdirectories
      */
     public FileStorageResult storeFingerprintImageOrganized(byte[] imageData, String imageType, String customName) {
@@ -259,6 +313,128 @@ public class FingerprintFileStorageService {
                 imageType
             );
         }
+    }
+    
+    /**
+     * Store fingerprint image as normal image file (PNG/JPEG) with automatic path and naming
+     */
+    public FileStorageResult storeFingerprintImageAsImage(byte[] imageData, String imageType, String customName, int width, int height) {
+        try {
+            // Determine storage path based on image type
+            String storagePath = getStoragePathForType(imageType);
+            
+            // Create full directory path
+            Path fullPath = Paths.get(baseStoragePath, storagePath);
+            Files.createDirectories(fullPath);
+            
+            // Generate unique filename
+            String filename = generateUniqueFilename(imageType, customName);
+            Path filePath = fullPath.resolve(filename);
+            
+            // Convert raw byte data to BufferedImage
+            BufferedImage bufferedImage = convertRawDataToImage(imageData, width, height);
+            
+            // Save as image file
+            boolean saved = ImageIO.write(bufferedImage, imageFormat, filePath.toFile());
+            
+            if (!saved) {
+                throw new IOException("Failed to write image file");
+            }
+            
+            logger.info("Fingerprint image stored as {} successfully: {}", imageFormat, filePath);
+            
+            return new FileStorageResult(
+                true,
+                "Image stored successfully as " + imageFormat,
+                filePath.toString(),
+                filename,
+                filePath.toFile().length(),
+                imageType
+            );
+            
+        } catch (IOException e) {
+            logger.error("Error storing fingerprint image as {}", imageFormat, e);
+            return new FileStorageResult(
+                false,
+                "Error storing image as " + imageFormat + ": " + e.getMessage(),
+                null,
+                null,
+                0,
+                imageType
+            );
+        }
+    }
+    
+    /**
+     * Store fingerprint image as normal image file in organized directory structure
+     */
+    public FileStorageResult storeFingerprintImageAsImageOrganized(byte[] imageData, String imageType, String customName, int width, int height) {
+        try {
+            // Create date-based directory structure
+            LocalDateTime now = LocalDateTime.now();
+            String yearMonth = now.format(DateTimeFormatter.ofPattern("yyyy/MM"));
+            String day = now.format(DateTimeFormatter.ofPattern("dd"));
+            
+            // Determine storage path based on image type
+            String storagePath = getStoragePathForType(imageType);
+            
+            // Create full directory path with date structure
+            Path fullPath = Paths.get(baseStoragePath, storagePath, yearMonth, day);
+            Files.createDirectories(fullPath);
+            
+            // Generate unique filename
+            String filename = generateUniqueFilename(imageType, customName);
+            Path filePath = fullPath.resolve(filename);
+            
+            // Convert raw byte data to BufferedImage
+            BufferedImage bufferedImage = convertRawDataToImage(imageData, width, height);
+            
+            // Save as image file
+            boolean saved = ImageIO.write(bufferedImage, imageFormat, filePath.toFile());
+            
+            if (!saved) {
+                throw new IOException("Failed to write image file");
+            }
+            
+            logger.info("Fingerprint image stored as {} in organized structure: {}", imageFormat, filePath);
+            
+            return new FileStorageResult(
+                true,
+                "Image stored successfully as " + imageFormat + " in organized structure",
+                filePath.toString(),
+                filename,
+                filePath.toFile().length(),
+                imageType
+            );
+            
+        } catch (IOException e) {
+            logger.error("Error storing fingerprint image as {} in organized structure", imageFormat, e);
+            return new FileStorageResult(
+                false,
+                "Error storing image as " + imageFormat + " in organized structure: " + e.getMessage(),
+                null,
+                null,
+                0,
+                imageType
+            );
+        }
+    }
+    
+    /**
+     * Convert raw byte data to BufferedImage
+     */
+    private BufferedImage convertRawDataToImage(byte[] imageData, int width, int height) {
+        // Create a grayscale BufferedImage
+        BufferedImage bufferedImage = new BufferedImage(width, height, BufferedImage.TYPE_BYTE_GRAY);
+        
+        // Get the raster data buffer
+        DataBufferByte dataBuffer = (DataBufferByte) bufferedImage.getRaster().getDataBuffer();
+        byte[] data = dataBuffer.getData();
+        
+        // Copy the raw data to the image buffer
+        System.arraycopy(imageData, 0, data, 0, Math.min(imageData.length, data.length));
+        
+        return bufferedImage;
     }
     
     /**

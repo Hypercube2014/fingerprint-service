@@ -1,594 +1,371 @@
 # BIO600 Fingerprint Service
 
-A clean, professional Spring Boot microservice for integrating with BIO600 fingerprint scanner devices. This service provides REST APIs for fingerprint capture, processing, device management, and **advanced file storage with configurable paths and unique naming conventions**.
+A Spring Boot service for capturing and processing fingerprint images using the BIO600 SDK.
 
 ## Features
 
-- **Device Management**: Initialize, configure, and manage fingerprint scanner devices
-- **Fingerprint Capture**: Capture standard, high-resolution, and rolled fingerprints
-- **Image Processing**: Split multiple fingers from images and assess quality
-- **Advanced File Storage**: Configurable storage paths with unique naming conventions
-- **REST API**: Clean, documented REST endpoints for easy integration
-- **Multi-channel Support**: Support for multiple scanner channels
-- **Quality Assessment**: Built-in fingerprint quality evaluation
-- **Error Handling**: Comprehensive error handling and logging
-- **File Management**: Store, retrieve, and manage fingerprint files with metadata
-
-## System Requirements
-
-- **Operating System**: Windows (due to DLL dependencies)
-- **Java**: JDK 17 or higher
-- **Dependencies**: JNA library (included in pom.xml)
-- **Hardware**: BIO600 fingerprint scanner device
-
-## Quick Start
-
-### 1. Build the Service
-
-```bash
-cd fingerprint-service
-mvn clean package
-```
-
-### 2. Run the Service
-
-```bash
-java -jar target/fingerprint-service-0.0.1-SNAPSHOT.jar
-```
-
-The service will start on port 8080 by default.
-
-### 3. Test the Service
-
-```bash
-# Health check
-curl http://localhost:8080/api/fingerprint/health
-
-# Initialize device
-curl -X POST "http://localhost:8080/api/fingerprint/init?channel=0"
-
-# Capture fingerprint with custom name
-curl -X POST "http://localhost:8080/api/fingerprint/capture?channel=0&width=1600&height=1500&customName=john_doe_right_index"
-```
-
-## File Storage Features
-
-### Configurable Storage Paths
-
-The service automatically organizes fingerprint images into configurable directory structures:
-
-```
-./fingerprints/
-├── standard/          # Standard fingerprint captures
-├── original/          # High-resolution original images
-├── rolled/            # Rolled/stitched fingerprints
-└── split/             # Split fingerprint images
-```
-
-### Unique Naming Conventions
-
-Fingerprint files are automatically named using a configurable pattern:
-
-**Default Pattern**: `{customName}_{imageType}_{timestamp}_{uuid}_{millis}.raw`
-
-**Examples**:
-- `john_doe_right_index_standard_20241215_143022_a1b2c3d4_1702650622123.raw`
-- `jane_smith_left_thumb_original_20241215_143045_e5f6g7h8_1702650645123.raw`
-- `user123_rolled_20241215_143100_i9j0k1l2_1702650660123.raw`
-
-### Organized Directory Structure
-
-Enable date-based organization for better file management:
-
-```
-./fingerprints/standard/2024/12/15/
-├── john_doe_right_index_standard_20241215_143022_a1b2c3d4_1702650622123.raw
-├── jane_smith_left_thumb_standard_20241215_143045_e5f6g7h8_1702650645123.raw
-└── user456_right_middle_standard_20241215_143100_i9j0k1l2_1702650660123.raw
-```
+- **Device Management**: Initialize, check status, and close fingerprint devices
+- **Fingerprint Capture**: Capture fingerprint images with quality assessment
+- **Automatic Image Storage**: Automatically store captured images as PNG files with organized directory structure
+- **Platform Detection**: Automatic detection of Windows/Linux compatibility
+- **REST API**: Clean REST endpoints for all operations
 
 ## API Endpoints
 
+### Health & Platform Info
+- `GET /api/fingerprint/health` - Service health check
+- `GET /api/fingerprint/platform` - Platform compatibility information
+
 ### Device Management
+- `POST /api/fingerprint/init?channel=0` - Initialize fingerprint device
+- `GET /api/fingerprint/status` - Get device status for all channels
+- `POST /api/fingerprint/close?channel=0` - Close fingerprint device
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| POST | `/api/fingerprint/init` | Initialize fingerprint device |
-| GET | `/api/fingerprint/device/info` | Get device information |
-| POST | `/api/fingerprint/device/settings` | Set device parameters |
-| GET | `/api/fingerprint/device/status` | Get device status |
-| POST | `/api/fingerprint/close` | Close device |
+### Fingerprint Capture
+- `POST /api/fingerprint/capture?channel=0&width=1600&height=1500` - Capture fingerprint image
+- `GET /api/fingerprint/capture?channel=0&width=1600&height=1500` - Capture fingerprint image (GET method for testing)
+- `POST /api/fingerprint/storage/test?channel=0&width=1600&height=1500&format=PNG` - Test image storage with different formats
 
-### Fingerprint Capture (with File Storage)
+### Fingerprint Splitting
+- `POST /api/fingerprint/split/thumbs?channel=0&width=1600&height=1500&splitWidth=300&splitHeight=400` - Split two thumb fingerprints (left and right) from a single image
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| POST | `/api/fingerprint/capture` | Capture standard fingerprint with custom naming |
-| POST | `/api/fingerprint/capture/original` | Capture high-resolution image with custom naming |
-| POST | `/api/fingerprint/capture/rolled` | Capture rolled fingerprint with custom naming |
+### Testing and Diagnostics
+- `GET /api/fingerprint/test/fpsplit` - Test FPSPLIT library initialization with different dimensions
 
-### File Storage Management
+### Storage Management
+- `GET /api/fingerprint/storage/stats` - Get storage statistics
+- `GET /api/fingerprint/storage/list?page=0&size=20` - List stored fingerprint images
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| POST | `/api/fingerprint/storage/store` | Store fingerprint image with custom path/naming |
-| POST | `/api/fingerprint/storage/store/organized` | Store in organized date-based structure |
-| GET | `/api/fingerprint/storage/file/info` | Get file information |
-| DELETE | `/api/fingerprint/storage/file/delete` | Delete fingerprint image |
-| GET | `/api/fingerprint/storage/stats` | Get storage statistics |
-| POST | `/api/fingerprint/storage/cleanup` | Clean up old files |
+## How the GET Capture Endpoint Works
 
-### Image Processing
+### Purpose
+The `GET /api/fingerprint/capture` endpoint is designed for **testing and development purposes**. It provides the same functionality as the POST endpoint but allows you to test fingerprint capture directly from a web browser or simple HTTP GET requests.
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| POST | `/api/fingerprint/split` | Split multiple fingers from image with custom naming |
+### How It Works
+1. **Same Logic**: The GET endpoint internally calls the same capture logic as the POST endpoint
+2. **Parameter Support**: Accepts the same parameters (channel, width, height) as query parameters
+3. **Easy Testing**: You can test the endpoint directly in a browser by visiting the URL
+4. **Same Response**: Returns identical response format as the POST endpoint
 
-### System
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/api/fingerprint/health` | Health check |
-
-## API Usage Examples
-
-### Capture Fingerprint with Custom Naming
-
+### Example Usage
 ```bash
-curl -X POST "http://localhost:8080/api/fingerprint/capture?channel=0&width=1600&height=1500&customName=john_doe_right_index"
+# Test in browser - just visit this URL
+http://localhost:8080/api/fingerprint/capture?channel=0&width=800&height=600
+
+# Test with curl
+curl "http://localhost:8080/api/fingerprint/capture?channel=0&width=800&height=600"
+
+# Test with different dimensions
+curl "http://localhost:8080/api/fingerprint/capture?channel=0&width=1600&height=1500"
 ```
 
-**Response:**
+### When to Use
+- **Development Testing**: Quick testing during development
+- **Browser Testing**: Easy testing from web browsers
+- **Simple Integration**: When you need simple GET requests
+- **Debugging**: Quick verification of capture functionality
+
+### Production Use
+For production applications, use the **POST endpoint** as it's more appropriate for operations that modify state (capturing fingerprints).
+
+## Usage Examples
+
+### 1. Check Platform Compatibility
+```bash
+curl http://localhost:8080/api/fingerprint/platform
+```
+
+### 2. Initialize Device
+```bash
+curl -X POST "http://localhost:8080/api/fingerprint/init?channel=0"
+```
+
+### 3. Capture Fingerprint (Automatically Stored as PNG)
+```bash
+# Using POST
+curl -X POST "http://localhost:8080/api/fingerprint/capture?channel=0&width=1600&height=1500"
+
+# Using GET (for testing)
+curl "http://localhost:8080/api/fingerprint/capture?channel=0&width=1600&height=1500"
+```
+
+**Response**: The endpoint returns capture information and storage details, but **not the raw image data**. The image is automatically saved as a PNG file, and you can access it using the file path in the response.
+
+### 4. Check Device Status
+```bash
+curl http://localhost:8080/api/fingerprint/status
+```
+
+### 5. Close Device
+```bash
+curl -X POST "http://localhost:8080/api/fingerprint/close?channel=0"
+```
+
+### 6. View Storage Statistics
+```bash
+curl http://localhost:8080/api/fingerprint/storage/stats
+```
+
+### 7. List Stored Images
+```bash
+curl "http://localhost:8080/api/fingerprint/storage/list?page=0&size=20"
+```
+
+### 8. Split Two Thumbs
+```bash
+# Split thumbs with default dimensions (300x400)
+curl -X POST "http://localhost:8080/api/fingerprint/split/thumbs?channel=0&width=1600&height=1500"
+
+# Split thumbs with custom split dimensions
+curl -X POST "http://localhost:8080/api/fingerprint/split/thumbs?channel=0&width=1600&height=1500&splitWidth=400&splitHeight=500"
+```
+
+## Response Format
+
+### Successful Capture Response (with Storage Info)
 ```json
 {
   "success": true,
   "message": "Fingerprint captured successfully",
-  "image": "base64_encoded_image_data",
   "width": 1600,
   "height": 1500,
   "quality_score": 85,
   "channel": 0,
-  "captured_at": "2024-12-15T14:30:22.123Z",
-  "file_info": {
-    "file_path": "./fingerprints/standard/john_doe_right_index_standard_20241215_143022_a1b2c3d4_1702650622123.raw",
-    "filename": "john_doe_right_index_standard_20241215_143022_a1b2c3d4_1702650622123.raw",
-    "file_size": 2400000,
-    "image_type": "standard"
-  }
+  "captured_at": "2025-09-02T13:46:47.123Z",
+  "storage_info": {
+    "stored": true,
+    "file_path": "./fingerprints/standard/2025/09/02/channel_0_1600x1500_standard_20250902_134647_abc12345_1735828007123.png",
+    "filename": "channel_0_1600x1500_standard_20250902_134647_abc12345_1735828007123.png",
+    "file_size": 2400000
+  },
+  "platform_info": "OS: Windows 10, Architecture: x64, Supported: true",
+  "timestamp": 1735828007123
 }
 ```
 
-### Store Image with Custom Path
+**Note**: The raw image data is not included in the response to reduce payload size. The image is automatically stored as a PNG file, and you can access it using the file path provided in `storage_info`.
 
-```bash
-curl -X POST "http://localhost:8080/api/fingerprint/storage/store" \
-  -d "image=base64_encoded_image" \
-  -d "image_type=standard" \
-  -d "customName=special_case_001" \
-  -d "customPath=custom/special_cases"
-```
-
-**Response:**
+### Error Response
 ```json
 {
-  "success": true,
-  "message": "Image stored successfully",
-  "file_path": "./fingerprints/custom/special_cases/special_case_001_20241215_143022.raw",
-  "filename": "special_case_001_20241215_143022.raw",
-  "file_size": 2400000,
-  "image_type": "custom",
-  "timestamp": "2024-12-15T14:30:22.123Z"
+  "success": false,
+  "message": "Platform not supported. This SDK requires Windows.",
+  "platform_info": "OS: Linux, Architecture: x64, Supported: false",
+  "channel": 0,
+  "timestamp": 1735828007123
 }
 ```
 
-### Store in Organized Structure
+## Platform Requirements
 
-```bash
-curl -X POST "http://localhost:8080/api/fingerprint/storage/store/organized" \
-  -d "image=base64_encoded_image" \
-  -d "image_type=standard" \
-  -d "customName=john_doe_right_index"
-```
+⚠️ **Important**: This service requires Windows to run the BIO600 SDK. The service will automatically detect the platform and provide appropriate error messages on unsupported platforms.
 
-**Response:**
-```json
-{
-  "success": true,
-  "message": "Image stored successfully in organized structure",
-  "file_path": "./fingerprints/standard/2024/12/15/john_doe_right_index_standard_20241215_143022_a1b2c3d4_1702650622123.raw",
-  "filename": "john_doe_right_index_standard_20241215_143022_a1b2c3d4_1702650622123.raw",
-  "file_size": 2400000,
-  "image_type": "standard",
-  "timestamp": "2024-12-15T14:30:22.123Z"
-}
-```
+### Supported Platforms
+- ✅ Windows (with .dll files)
 
-### Get Storage Statistics
-
-```bash
-curl "http://localhost:8080/api/fingerprint/storage/stats"
-```
-
-**Response:**
-```json
-{
-  "success": true,
-  "total_files": 150,
-  "total_size": 360000000,
-  "directory_count": 25,
-  "timestamp": "2024-12-15T14:30:22.123Z"
-}
-```
-
-### Clean Up Old Files
-
-```bash
-curl -X POST "http://localhost:8080/api/fingerprint/storage/cleanup?daysToKeep=30"
-```
-
-**Response:**
-```json
-{
-  "success": true,
-  "deleted_files": 45,
-  "freed_space": 108000000,
-  "message": "Cleanup completed successfully",
-  "timestamp": "2024-12-15T14:30:22.123Z"
-}
-```
+### Unsupported Platforms
+- ❌ Linux (will show platform incompatibility message)
+- ❌ macOS (will show platform incompatibility message)
 
 ## Configuration
 
-The service can be configured through `application.properties`:
+The service uses default parameters that can be overridden:
+- **Channel**: Default 0
+- **Width**: Default 1600 pixels
+- **Height**: Default 1500 pixels
 
+## Storage Structure
+
+The service automatically organizes stored fingerprint images in a hierarchical directory structure:
+
+```
+./fingerprints/
+├── standard/           # Standard fingerprint images
+│   ├── 2025/
+│   │   ├── 09/
+│   │   │   ├── 02/    # Date-based organization
+│   │   │   │   ├── channel_0_1600x1500_standard_20250902_134647_abc12345_1735828007123.png
+│   │   │   │   └── ... (more images)
+│   │   │   └── ...
+│   │   └── ...
+│   └── ...
+├── original/           # High-resolution original images
+├── rolled/             # Rolled fingerprint images
+└── split/              # Split fingerprint images
+```
+
+### File Naming Convention
+- **Format**: `{customName}_{imageType}_{timestamp}_{uuid}_{timestamp}.png`
+- **Example**: `channel_0_1600x1500_standard_20250902_134647_abc12345_1735828007123.png`
+
+### Storage Configuration
 ```properties
-# Device Configuration
-fingerprint.device.default-channel=0
-fingerprint.device.default-width=1600
-fingerprint.device.default-height=1500
-fingerprint.device.quality-threshold=70
-
-# Image Configuration
-fingerprint.image.max-size=2688x1944
-fingerprint.image.standard-size=1600x1500
-fingerprint.image.rolled-size=800x750
-fingerprint.image.split-size=300x400
-
-# Service Configuration
-fingerprint.service.timeout=30000
-fingerprint.service.max-retries=3
-
-# Storage Configuration
 fingerprint.storage.base-path=./fingerprints
 fingerprint.storage.standard-path=standard
 fingerprint.storage.original-path=original
 fingerprint.storage.rolled-path=rolled
 fingerprint.storage.split-path=split
-fingerprint.storage.file-extension=.raw
+fingerprint.storage.file-extension=.png
+fingerprint.storage.image-format=PNG
 fingerprint.storage.create-timestamp=true
 fingerprint.storage.create-uuid=true
 fingerprint.storage.max-files-per-directory=1000
-fingerprint.storage.retention-days=90
-fingerprint.storage.organized-structure=true
 ```
 
-### Storage Configuration Options
+## Quality Assessment
 
-| Property | Default | Description |
-|----------|---------|-------------|
-| `fingerprint.storage.base-path` | `./fingerprints` | Base directory for all fingerprint storage |
-| `fingerprint.storage.standard-path` | `standard` | Subdirectory for standard fingerprints |
-| `fingerprint.storage.original-path` | `original` | Subdirectory for original high-res images |
-| `fingerprint.storage.rolled-path` | `rolled` | Subdirectory for rolled fingerprints |
-| `fingerprint.storage.split-path` | `split` | Subdirectory for split fingerprint images |
-| `fingerprint.storage.file-extension` | `.raw` | File extension for stored images |
-| `fingerprint.storage.create-timestamp` | `true` | Include timestamp in filename |
-| `fingerprint.storage.create-uuid` | `true` | Include UUID in filename |
-| `fingerprint.storage.max-files-per-directory` | `1000` | Maximum files per directory |
-| `fingerprint.storage.retention-days` | `90` | Days to keep files before cleanup |
-| `fingerprint.storage.organized-structure` | `true` | Enable date-based organization |
+The service automatically assesses fingerprint quality using:
+1. **SDK Quality Assessment** (if available)
+2. **Fallback Algorithm** based on:
+   - Image contrast (standard deviation)
+   - Brightness levels
+   - Fingerprint coverage area
 
-## Integration with Laravel
+## Image Storage & Conversion
 
-### 1. Install HTTP Client
+### Image Format Conversion
+The service automatically converts raw fingerprint data to standard image formats:
+- **Input**: Raw byte data from fingerprint device
+- **Output**: PNG image files (configurable to other formats)
+- **Quality**: Grayscale images preserving fingerprint details
+- **Size**: Maintains original dimensions (e.g., 1600x1500 pixels)
+
+### Supported Image Formats
+- **PNG** (default) - Lossless compression, best for fingerprint analysis
+- **JPEG** - Configurable for smaller file sizes
+- **BMP** - Uncompressed format for maximum quality
+
+### Conversion Process
+1. **Raw Data Capture**: Get raw byte data from fingerprint device
+2. **Image Creation**: Convert to BufferedImage with proper dimensions
+3. **Format Encoding**: Use ImageIO to save in desired format
+4. **File Storage**: Save in organized directory structure
+
+## Running the Service
 
 ```bash
-composer require guzzlehttp/guzzle
+# Navigate to the service directory
+cd fingerprint-service
+
+# Run with Maven
+mvn spring-boot:run
+
+# Or build and run JAR
+mvn clean package
+java -jar target/fingerprint-service-0.0.1-SNAPSHOT.jar
 ```
 
-### 2. Create Service Class
-
-```php
-<?php
-
-namespace App\Services;
-
-use GuzzleHttp\Client;
-use GuzzleHttp\Exception\GuzzleException;
-
-class FingerprintService
-{
-    private $client;
-    private $baseUrl;
-
-    public function __construct()
-    {
-        $this->client = new Client();
-        $this->baseUrl = config('fingerprint.service_url', 'http://localhost:8080');
-    }
-
-    public function captureFingerprintWithCustomName(int $channel = 0, int $width = 1600, int $height = 1500, string $customName = null): array
-    {
-        try {
-            $params = [
-                'channel' => $channel,
-                'width' => $width,
-                'height' => $height
-            ];
-            
-            if ($customName) {
-                $params['customName'] = $customName;
-            }
-
-            $response = $this->client->post($this->baseUrl . '/api/fingerprint/capture', [
-                'query' => $params
-            ]);
-
-            $data = json_decode($response->getBody(), true);
-            
-            if ($data['success'] && isset($data['file_info'])) {
-                // Store file path in database for later reference
-                $this->storeFingerprintRecord($data['file_info'], $customName);
-            }
-
-            return $data;
-        } catch (GuzzleException $e) {
-            return [
-                'success' => false,
-                'message' => 'Failed to capture fingerprint: ' . $e->getMessage()
-            ];
-        }
-    }
-
-    public function storeFingerprintImage(string $base64Image, string $imageType, string $customName = null, string $customPath = null): array
-    {
-        try {
-            $params = [
-                'image' => $base64Image,
-                'image_type' => $imageType
-            ];
-            
-            if ($customName) {
-                $params['customName'] = $customName;
-            }
-            
-            if ($customPath) {
-                $params['customPath'] = $customPath;
-            }
-
-            $response = $this->client->post($this->baseUrl . '/api/fingerprint/storage/store', [
-                'form_params' => $params
-            ]);
-
-            return json_decode($response->getBody(), true);
-        } catch (GuzzleException $e) {
-            return [
-                'success' => false,
-                'message' => 'Failed to store fingerprint image: ' . $e->getMessage()
-            ];
-        }
-    }
-
-    private function storeFingerprintRecord(array $fileInfo, string $customName = null): void
-    {
-        // Store fingerprint record in database
-        \App\Models\Fingerprint::create([
-            'user_id' => auth()->id(),
-            'file_path' => $fileInfo['file_path'],
-            'filename' => $fileInfo['filename'],
-            'file_size' => $fileInfo['file_size'],
-            'image_type' => $fileInfo['image_type'],
-            'custom_name' => $customName,
-            'captured_at' => now()
-        ]);
-    }
-}
-```
-
-### 3. Use in Controller
-
-```php
-<?php
-
-namespace App\Http\Controllers;
-
-use App\Services\FingerprintService;
-use Illuminate\Http\Request;
-
-class FingerprintController extends Controller
-{
-    private $fingerprintService;
-
-    public function __construct(FingerprintService $fingerprintService)
-    {
-        $this->fingerprintService = $fingerprintService;
-    }
-
-    public function capture(Request $request)
-    {
-        $request->validate([
-            'finger_type' => 'required|string',
-            'hand' => 'required|in:left,right',
-            'custom_name' => 'nullable|string|max:100'
-        ]);
-
-        $customName = $request->get('custom_name') ?: 
-            auth()->user()->name . '_' . $request->hand . '_' . $request->finger_type;
-
-        $result = $this->fingerprintService->captureFingerprintWithCustomName(
-            0, 1600, 1500, $customName
-        );
-        
-        if ($result['success']) {
-            return response()->json([
-                'success' => true,
-                'message' => 'Fingerprint captured successfully',
-                'file_info' => $result['file_info'],
-                'quality_score' => $result['quality_score']
-            ]);
-        }
-        
-        return response()->json([
-            'success' => false,
-            'message' => $result['message']
-        ], 500);
-    }
-
-    public function storeImage(Request $request)
-    {
-        $request->validate([
-            'image' => 'required|string',
-            'image_type' => 'required|string',
-            'custom_name' => 'nullable|string|max:100',
-            'custom_path' => 'nullable|string|max:200'
-        ]);
-
-        $result = $this->fingerprintService->storeFingerprintImage(
-            $request->image,
-            $request->image_type,
-            $request->custom_name,
-            $request->custom_path
-        );
-
-        if ($result['success']) {
-            return response()->json([
-                'success' => true,
-                'message' => 'Image stored successfully',
-                'file_info' => [
-                    'file_path' => $result['file_path'],
-                    'filename' => $result['filename'],
-                    'file_size' => $result['file_size']
-                ]
-            ]);
-        }
-
-        return response()->json([
-            'success' => false,
-            'message' => $result['message']
-        ], 500);
-    }
-}
-```
-
-## File Naming Patterns
-
-### Standard Pattern
-```
-{customName}_{imageType}_{timestamp}_{uuid}_{millis}.{extension}
-```
-
-### Custom Pattern (when customPath is specified)
-```
-{customName}_{timestamp}.{extension}
-```
-
-### Organized Structure Pattern
-```
-{basePath}/{imageType}/{year}/{month}/{day}/{standardPattern}
-```
-
-## Error Handling
-
-The service provides comprehensive error handling:
-
-- **Device Errors**: Device initialization, connection, and configuration errors
-- **Capture Errors**: Image capture and processing errors
-- **Storage Errors**: File storage, path creation, and permission errors
-- **Validation Errors**: Parameter validation and range checking
-- **System Errors**: Service-level errors and exceptions
-
-All errors include:
-- Error message
-- Timestamp
-- Error context
-- HTTP status codes
-
-## Logging
-
-The service uses SLF4J with configurable log levels:
-
-- **INFO**: General service operations and file storage
-- **DEBUG**: Detailed SDK operations and file operations
-- **ERROR**: Error conditions and exceptions
-- **WARN**: Warning conditions and storage issues
-
-## Security Considerations
-
-- **CORS**: Configured for cross-origin requests
-- **Input Validation**: All parameters are validated
-- **Error Sanitization**: Error messages are sanitized
-- **Access Control**: Device access is controlled per channel
-- **File Permissions**: Proper file permissions for stored images
-- **Path Validation**: Prevents directory traversal attacks
+The service will start on port 8080 by default and create the storage directory structure automatically.
 
 ## Troubleshooting
 
-### Common Issues
+### Error Code -106
+This error typically occurs when:
+- Running on an unsupported platform (Linux/macOS)
+- DLL files are not accessible
+- Device is not properly connected
 
-1. **Device Not Found**
-   - Ensure BIO600 device is connected
-   - Check device drivers are installed
-   - Verify DLL files are accessible
+### Platform Not Supported
+If you see "Platform not supported" messages:
+1. Ensure you're running on Windows
+2. Check that all .dll files are in the service directory
+3. Verify the BIO600 hardware is connected
 
-2. **Storage Permission Issues**
-   - Check write permissions for storage directory
-   - Verify disk space availability
-   - Check file system permissions
+### Storage Issues
+If images are not being stored:
+1. Check the `fingerprint.storage.base-path` configuration
+2. Ensure the application has write permissions to the storage directory
+3. Check the logs for storage-related errors
 
-3. **File Naming Conflicts**
-   - Ensure custom names are unique
-   - Check for special characters in names
-   - Verify path length limits
+### FPSPLIT Library Initialization Failure
+If you see "Failed to initialize FPSPLIT library" errors:
+1. **Use the test endpoint**: `GET /api/fingerprint/test/fpsplit`
+2. **Check dimension compatibility**: The FPSPLIT library may not support large dimensions like 1600x1500
+3. **Automatic fallback**: The service will automatically try smaller dimensions if the original ones fail
+4. **Common working dimensions**: Try 800x600, 640x480, or 400x300
+5. **DLL verification**: Ensure `FpSplit.dll` is in the application directory
 
-4. **Initialization Failures**
-   - Check device permissions
-   - Verify device is not in use by another application
-   - Check system resources
+## Next Steps
 
-### Debug Steps
+This service provides the foundation for fingerprint capture and storage. Future enhancements could include:
+- Fingerprint splitting (right/left four fingers, thumbs, single finger)
+- Advanced quality assessment
+- Batch processing capabilities
+- Image compression and optimization
+- Database integration for metadata storage
 
-1. Check service logs for detailed error messages
-2. Verify device connection and drivers
-3. Test with simple operations first
-4. Check system resources and permissions
-5. Verify storage directory permissions and space
+## Fingerprint Splitting
 
-## Performance Optimization
+### What Are Split Fingerprints?
 
-1. **File Compression**: Consider compressing fingerprint images before storage
-2. **Batch Operations**: Process multiple fingerprints in batches
-3. **Async Storage**: Use async operations for non-critical file storage
-4. **Cleanup Scheduling**: Schedule regular cleanup operations during off-peak hours
+Fingerprint splitting is the process of taking a single captured fingerprint image and extracting multiple individual fingerprints from it. This is useful when you capture a hand with multiple fingers and want to process each finger separately.
 
-## Conclusion
+### Split Two Thumbs Explained
 
-This BIO600 fingerprint SDK provides robust fingerprint capture and processing capabilities with advanced file storage features. The recommended integration approach is through a Java microservice that exposes REST APIs, allowing Laravel to easily consume fingerprint services while maintaining security and performance.
+The **`/split/thumbs`** endpoint is designed to efficiently capture and process both thumb fingerprints:
 
-The file storage system provides:
-- **Flexible naming conventions** for easy identification
-- **Organized directory structures** for better file management
-- **Configurable storage paths** for different use cases
-- **Automatic file management** with cleanup capabilities
-- **Comprehensive metadata** for each stored file
+#### **How It Works:**
+1. **Single Capture**: Captures one image that contains both left and right thumb fingerprints
+2. **Automatic Detection**: Uses the FPSPLIT library to automatically detect thumb regions in the image
+3. **Smart Splitting**: Separates the image into two individual thumb images
+4. **Individual Storage**: Saves each thumb as a separate PNG file in the organized storage structure
 
-For production use, ensure proper error handling, logging, and security measures are implemented. Consider implementing fingerprint template encryption and secure storage practices to protect sensitive biometric data.
+#### **Use Case:**
+- **Efficient Capture**: Instead of capturing thumbs separately, capture both at once
+- **Automatic Separation**: The system automatically detects and splits them
+- **Individual Processing**: Each thumb can then be processed separately for verification or storage
 
-## Support
+#### **Output:**
+- **Left Thumb**: Saved as `left_thumb_position_0_split_...png`
+- **Right Thumb**: Saved as `right_thumb_position_1_split_...png`
+- **Metadata**: Position, dimensions, quality, and storage information for each thumb
 
-For issues and questions:
-1. Check the troubleshooting section
-2. Review service logs
-3. Verify device compatibility
-4. Check storage configuration
-5. Contact development team
+#### **Parameters:**
+- `channel`: Device channel (default: 0)
+- `width`: Original image width (default: 1600)
+- `height`: Original image height (default: 1500)
+- `splitWidth`: Width of split thumb images (default: 300)
+- `splitHeight`: Height of split thumb images (default: 400)
 
+#### **Response Format:**
+```json
+{
+  "success": true,
+  "split_type": "two_thumbs",
+  "thumb_count": 2,
+  "thumbs": [
+    {
+      "thumb_name": "left_thumb",
+      "position": 0,
+      "width": 300,
+      "height": 400,
+      "quality_score": 75,
+      "storage_info": {
+        "stored": true,
+        "file_path": "./fingerprints/split/2025/09/02/left_thumb_position_0_split_20250902_134647_abc12345_1735828007123.png",
+        "filename": "left_thumb_position_0_split_20250902_134647_abc12345_1735828007123.png",
+        "file_size": 120000
+      }
+    },
+    {
+      "thumb_name": "right_thumb",
+      "position": 1,
+      "width": 300,
+      "height": 400,
+      "quality_score": 75,
+      "storage_info": {
+        "stored": true,
+        "file_path": "./fingerprints/split/2025/09/02/right_thumb_position_1_split_20250902_134647_def67890_1735828007123.png",
+        "filename": "right_thumb_position_1_split_20250902_134647_def67890_1735828007123.png",
+        "file_size": 118000
+      }
+    }
+  ],
+  "split_width": 300,
+  "split_height": 400,
+  "original_width": 1600,
+  "original_height": 1500,
+  "channel": 0,
+  "captured_at": "2025-09-02T13:46:47.123Z"
+}
+```
