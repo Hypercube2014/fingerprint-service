@@ -412,9 +412,40 @@
                 this.lastFrameTime = Date.now();
                 this.fps = 0;
                 
+                // Initialize Web Worker for image processing
+                this.imageWorker = null;
+                this.initializeImageWorker();
+                
                 this.initializeElements();
                 this.setupEventListeners();
                 this.connectWebSocket();
+            }
+            
+            initializeImageWorker() {
+                try {
+                    this.imageWorker = new Worker('/js/workers/image-processing-worker.js');
+                    this.imageWorker.onmessage = (e) => {
+                        this.handleWorkerMessage(e.data);
+                    };
+                    this.imageWorker.onerror = (error) => {
+                        console.error('Image worker error:', error);
+                        // Fallback to synchronous processing
+                        this.useWebWorker = false;
+                    };
+                } catch (error) {
+                    console.warn('Web Worker not supported, using synchronous processing:', error);
+                    this.useWebWorker = false;
+                }
+            }
+            
+            handleWorkerMessage(data) {
+                if (data.success && data.type === 'fingerprint_image_processed') {
+                    this.drawProcessedImage(data.data);
+                } else if (!data.success) {
+                    console.error('Image processing failed:', data.error);
+                    // Fallback to synchronous processing
+                    this.useWebWorker = false;
+                }
             }
             
             initializeElements() {
@@ -570,13 +601,50 @@
                     fingerStatus.textContent = 'Not Detected';
                 }
                 
-                // Display image on canvas
+                // Display image on canvas using Web Worker (non-blocking)
                 if (data.imageData) {
-                    this.drawImageFromBase64(data.imageData, data.width, data.height);
+                    this.drawImageFromBase64Async(data.imageData, data.width, data.height);
                 }
             }
             
+            /**
+             * Draw image using Web Worker (non-blocking)
+             */
+            drawImageFromBase64Async(base64Data, width, height) {
+                if (this.imageWorker && this.useWebWorker !== false) {
+                    // Use Web Worker for non-blocking processing
+                    this.imageWorker.postMessage({
+                        type: 'process_fingerprint_image',
+                        data: {
+                            base64Data: base64Data,
+                            width: width,
+                            height: height,
+                            options: {
+                                applyVerticalFlip: true,
+                                enhanceImage: true
+                            }
+                        }
+                    });
+                } else {
+                    // Fallback to synchronous processing
+                    this.drawImageFromBase64(base64Data, width, height);
+                }
+            }
+            
+            /**
+             * Draw processed image data from Web Worker
+             */
+            drawProcessedImage(processedData) {
+                const { enhancedImageData, width, height } = processedData;
+                this.drawImageFromBase64(enhancedImageData, width, height);
+            }
+            
+            /**
+             * Synchronous image processing (fallback)
+             */
             drawImageFromBase64(base64Data, width, height) {
+                const startTime = performance.now();
+                
                 // Convert base64 to bytes
                 const binaryString = atob(base64Data);
                 const bytes = new Uint8Array(binaryString.length);
@@ -648,6 +716,12 @@
                 this.ctx.strokeStyle = '#d0d0d0';
                 this.ctx.lineWidth = 1;
                 this.ctx.strokeRect(offsetX, offsetY, scaledWidth, scaledHeight);
+                
+                // Log processing time for monitoring
+                const processingTime = performance.now() - startTime;
+                if (processingTime > 16) { // More than one frame at 60fps
+                    console.warn(`Slow image processing: ${processingTime.toFixed(2)}ms`);
+                }
             }
             
             updateQualityIndicator(quality) {

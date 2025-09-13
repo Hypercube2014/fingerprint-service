@@ -2,6 +2,7 @@ package com.hypercube.fingerprint_service.websocket;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.hypercube.fingerprint_service.services.FingerprintDeviceService;
+import com.hypercube.fingerprint_service.services.WebSocketMetricsService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -15,6 +16,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.CompletableFuture;
 
 @Component
 public class FingerprintWebSocketHandler implements WebSocketHandler {
@@ -33,12 +35,18 @@ public class FingerprintWebSocketHandler implements WebSocketHandler {
     
     @Autowired
     private FingerprintDeviceService deviceService;
+
+    @Autowired
+    private WebSocketMetricsService metricsService;
     
     @Override
     public void afterConnectionEstablished(WebSocketSession session) throws Exception {
         String sessionId = session.getId();
         sessions.put(sessionId, session);
         previewStates.put(sessionId, new PreviewState());
+        
+        // Record connection metrics
+        metricsService.recordConnection(sessionId);
         
         logger.info("WebSocket connection established: {}", sessionId);
         
@@ -54,6 +62,7 @@ public class FingerprintWebSocketHandler implements WebSocketHandler {
     public void handleMessage(WebSocketSession session, WebSocketMessage<?> message) throws Exception {
         String sessionId = session.getId();
         String payload = (String) message.getPayload();
+        long startTime = System.currentTimeMillis();
         
         logger.debug("Received message from {}: {}", sessionId, payload);
         
@@ -70,10 +79,10 @@ public class FingerprintWebSocketHandler implements WebSocketHandler {
                     handleStopPreview(session, sessionId);
                     break;
                 case "capture":
-                    handleCapture(session, sessionId, messageData);
+                    handleCaptureAsync(session, sessionId, messageData);
                     break;
                 case "capture_template":
-                    handleCaptureTemplate(session, sessionId, messageData);
+                    handleCaptureTemplateAsync(session, sessionId, messageData);
                     break;
                 case "get_status":
                     handleGetStatus(session, sessionId);
@@ -85,6 +94,10 @@ public class FingerprintWebSocketHandler implements WebSocketHandler {
         } catch (Exception e) {
             logger.error("Error handling message from {}: {}", sessionId, e.getMessage(), e);
             sendError(session, "Error processing message: " + e.getMessage());
+        } finally {
+            // Record metrics
+            long processingTime = System.currentTimeMillis() - startTime;
+            metricsService.recordMessageProcessing(sessionId, "handleMessage", processingTime);
         }
     }
     
@@ -159,6 +172,68 @@ public class FingerprintWebSocketHandler implements WebSocketHandler {
         }
     }
     
+    /**
+     * Handle capture command asynchronously to prevent blocking
+     */
+    private void handleCaptureAsync(WebSocketSession session, String sessionId, Map<String, Object> messageData) {
+        try {
+            int channel = getIntValue(messageData, "channel", 0);
+            int width = getIntValue(messageData, "width", 1600);
+            int height = getIntValue(messageData, "height", 1500);
+            
+            logger.info("Starting async fingerprint capture for session {}: channel={}, dimensions={}x{}", 
+                sessionId, channel, width, height);
+            
+            // Send immediate response to prevent timeout
+            sendMessage(session, createMessage("capture_started", Map.of(
+                "session_id", sessionId,
+                "channel", channel,
+                "message", "Capture operation started"
+            )));
+            
+            // Perform capture asynchronously
+            deviceService.captureFingerprintAsync(channel, width, height)
+                .thenAccept(captureResult -> {
+                    try {
+                        if (captureResult != null && Boolean.TRUE.equals(captureResult.get("success"))) {
+                            Map<String, Object> responseData = new HashMap<>();
+                            responseData.put("success", true);
+                            responseData.put("imageData", captureResult.get("image"));
+                            responseData.put("quality", captureResult.get("quality_score"));
+                            responseData.put("width", width);
+                            responseData.put("height", height);
+                            responseData.put("channel", channel);
+                            responseData.put("storage_info", captureResult.get("storage_info"));
+                            responseData.put("processing_time_ms", captureResult.get("processing_time_ms"));
+                            
+                            sendMessage(session, createMessage("capture_result", responseData));
+                        } else {
+                            String errorMsg = "Capture failed";
+                            if (captureResult != null && captureResult.get("error") != null) {
+                                errorMsg += ": " + captureResult.get("error");
+                            }
+                            sendError(session, errorMsg);
+                        }
+                    } catch (Exception e) {
+                        logger.error("Error processing async capture result for session {}: {}", sessionId, e.getMessage());
+                        sendError(session, "Error processing capture result: " + e.getMessage());
+                    }
+                })
+                .exceptionally(throwable -> {
+                    logger.error("Async capture failed for session {}: {}", sessionId, throwable.getMessage());
+                    sendError(session, "Capture operation failed: " + throwable.getMessage());
+                    return null;
+                });
+            
+        } catch (Exception e) {
+            logger.error("Error starting async capture for session {}: {}", sessionId, e.getMessage(), e);
+            sendError(session, "Error starting capture: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Handle capture command synchronously (DEPRECATED - kept for compatibility)
+     */
     private void handleCapture(WebSocketSession session, String sessionId, Map<String, Object> messageData) {
         try {
             int channel = getIntValue(messageData, "channel", 0);
@@ -196,6 +271,83 @@ public class FingerprintWebSocketHandler implements WebSocketHandler {
         }
     }
     
+    /**
+     * Handle template capture command asynchronously
+     */
+    private void handleCaptureTemplateAsync(WebSocketSession session, String sessionId, Map<String, Object> messageData) {
+        try {
+            int channel = getIntValue(messageData, "channel", 0);
+            int width = getIntValue(messageData, "width", 1600);
+            int height = getIntValue(messageData, "height", 1500);
+            String format = (String) messageData.get("format");
+            
+            if (format == null || format.isEmpty()) {
+                sendError(session, "Template format not specified");
+                return;
+            }
+            
+            logger.info("Starting async template capture for session {}: channel={}, dimensions={}x{}, format={}", 
+                sessionId, channel, width, height, format);
+            
+            // Send immediate response
+            sendMessage(session, createMessage("template_capture_started", Map.of(
+                "session_id", sessionId,
+                "format", format,
+                "message", "Template capture operation started"
+            )));
+            
+            // Perform template capture asynchronously
+            CompletableFuture.supplyAsync(() -> {
+                try {
+                    return deviceService.captureFingerprintTemplate(channel, width, height, format);
+                } catch (Exception e) {
+                    logger.error("Error in async template capture for session {}: {}", sessionId, e.getMessage());
+                    return Map.of("success", false, "error", e.getMessage());
+                }
+            })
+            .thenAccept(templateResult -> {
+                try {
+                    if (templateResult != null && Boolean.TRUE.equals(templateResult.get("success"))) {
+                        Map<String, Object> responseData = new HashMap<>();
+                        responseData.put("success", true);
+                        responseData.put("template_format", templateResult.get("template_format"));
+                        responseData.put("template_size", templateResult.get("template_size"));
+                        responseData.put("template_data", templateResult.get("template_data"));
+                        responseData.put("iso_template", templateResult.get("iso_template"));
+                        responseData.put("ansi_template", templateResult.get("ansi_template"));
+                        responseData.put("quality_score", templateResult.get("quality_score"));
+                        responseData.put("width", width);
+                        responseData.put("height", height);
+                        responseData.put("channel", channel);
+                        
+                        sendMessage(session, createMessage("template_result", responseData));
+                    } else {
+                        String errorMsg = "Template capture failed";
+                        if (templateResult != null && templateResult.get("error") != null) {
+                            errorMsg += ": " + templateResult.get("error");
+                        }
+                        sendError(session, errorMsg);
+                    }
+                } catch (Exception e) {
+                    logger.error("Error processing async template result for session {}: {}", sessionId, e.getMessage());
+                    sendError(session, "Error processing template result: " + e.getMessage());
+                }
+            })
+            .exceptionally(throwable -> {
+                logger.error("Async template capture failed for session {}: {}", sessionId, throwable.getMessage());
+                sendError(session, "Template capture operation failed: " + throwable.getMessage());
+                return null;
+            });
+            
+        } catch (Exception e) {
+            logger.error("Error starting async template capture for session {}: {}", sessionId, e.getMessage(), e);
+            sendError(session, "Error starting template capture: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Handle template capture command synchronously (DEPRECATED)
+     */
     private void handleCaptureTemplate(WebSocketSession session, String sessionId, Map<String, Object> messageData) {
         try {
             int channel = getIntValue(messageData, "channel", 0);
@@ -306,6 +458,9 @@ public class FingerprintWebSocketHandler implements WebSocketHandler {
     public void afterConnectionClosed(WebSocketSession session, CloseStatus closeStatus) throws Exception {
         String sessionId = session.getId();
         logger.info("WebSocket connection closed: {} - {}", sessionId, closeStatus);
+        
+        // Record disconnection metrics
+        metricsService.recordDisconnection(sessionId);
         
         // Clean up session
         cleanupSession(sessionId);

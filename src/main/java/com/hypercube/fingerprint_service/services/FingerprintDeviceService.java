@@ -8,7 +8,15 @@ import com.hypercube.fingerprint_service.sdk.ZAZ_FpStdLib;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
+
+import jakarta.annotation.PreDestroy;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.Executor;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.TimeUnit;
 
 import java.util.Base64;
 import java.util.Map;
@@ -39,6 +47,24 @@ public class FingerprintDeviceService {
     @Autowired
     private FingerprintFileStorageService fileStorageService;
 
+    @Autowired
+    @Qualifier("fingerprintDeviceExecutor")
+    private Executor deviceExecutor;
+
+    @Autowired
+    @Qualifier("fingerprintPreviewExecutor")
+    private Executor previewExecutor;
+
+    @Autowired
+    @Qualifier("fingerprintHeavyExecutor")
+    private Executor heavyExecutor;
+
+    @Autowired
+    private CircuitBreakerService circuitBreaker;
+
+    @Autowired
+    private WebSocketMetricsService metricsService;
+
     public FingerprintDeviceService() {
         String os = System.getProperty("os.name").toLowerCase();
         this.isWindows = os.contains("win");
@@ -48,7 +74,46 @@ public class FingerprintDeviceService {
     }
 
     /**
-     * Initialize fingerprint device for a specific channel
+     * Cleanup resources on application shutdown
+     */
+    @PreDestroy
+    public void cleanup() {
+        logger.info("Shutting down FingerprintDeviceService...");
+        
+        // Stop all preview streams
+        for (Integer channel : previewRunning.keySet()) {
+            if (previewRunning.get(channel)) {
+                stopPreviewStream(channel);
+            }
+        }
+        
+        // Force cleanup of stuck threads
+        for (Map.Entry<Integer, Thread> entry : previewThreads.entrySet()) {
+            Thread thread = entry.getValue();
+            if (thread != null && thread.isAlive()) {
+                thread.interrupt();
+                try {
+                    thread.join(1000); // Wait 1 second
+                    if (thread.isAlive()) {
+                        logger.warn("Force terminating stuck preview thread for channel {}", entry.getKey());
+                        // Note: In Java, we can't force kill threads, but interrupt should work
+                    }
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            }
+        }
+        
+        previewThreads.clear();
+        previewRunning.clear();
+        previewStreams.clear();
+        latestFrames.clear();
+        
+        logger.info("FingerprintDeviceService shutdown complete");
+    }
+
+    /**
+     * Initialize fingerprint device for a specific channel (SYNCHRONOUS - for compatibility)
      */
     public boolean initializeDevice(int channel) {
         try {
@@ -92,7 +157,85 @@ public class FingerprintDeviceService {
     }
 
     /**
-     * Capture fingerprint image
+     * Initialize fingerprint device asynchronously
+     */
+    @Async("fingerprintDeviceExecutor")
+    public CompletableFuture<Map<String, Object>> initializeDeviceAsync(int channel) {
+        long startTime = System.currentTimeMillis();
+        try {
+            boolean success = initializeDevice(channel);
+            long processingTime = System.currentTimeMillis() - startTime;
+            
+            Map<String, Object> result = Map.of(
+                "success", success,
+                "channel", channel,
+                "processing_time_ms", processingTime
+            );
+            
+            if (success) {
+                circuitBreaker.recordSuccess();
+            } else {
+                circuitBreaker.recordFailure();
+            }
+            
+            return CompletableFuture.completedFuture(result);
+            
+        } catch (Exception e) {
+            circuitBreaker.recordFailure();
+            long processingTime = System.currentTimeMillis() - startTime;
+            logger.error("Error in async device initialization for channel {}: {}", channel, e.getMessage());
+            
+            return CompletableFuture.completedFuture(Map.of(
+                "success", false,
+                "channel", channel,
+                "error", e.getMessage(),
+                "processing_time_ms", processingTime
+            ));
+        }
+    }
+
+    /**
+     * Capture fingerprint image asynchronously
+     */
+    @Async("fingerprintDeviceExecutor")
+    public CompletableFuture<Map<String, Object>> captureFingerprintAsync(int channel, int width, int height) {
+        long startTime = System.currentTimeMillis();
+        try {
+            if (!circuitBreaker.isOperationAllowed()) {
+                return CompletableFuture.completedFuture(Map.of(
+                    "success", false,
+                    "error", "Circuit breaker is open - too many failures",
+                    "processing_time_ms", System.currentTimeMillis() - startTime
+                ));
+            }
+            
+            Map<String, Object> result = captureFingerprint(channel, width, height);
+            long processingTime = System.currentTimeMillis() - startTime;
+            
+            if (Boolean.TRUE.equals(result.get("success"))) {
+                circuitBreaker.recordSuccess();
+            } else {
+                circuitBreaker.recordFailure();
+            }
+            
+            result.put("processing_time_ms", processingTime);
+            return CompletableFuture.completedFuture(result);
+            
+        } catch (Exception e) {
+            circuitBreaker.recordFailure();
+            long processingTime = System.currentTimeMillis() - startTime;
+            logger.error("Error in async fingerprint capture for channel {}: {}", channel, e.getMessage());
+            
+            return CompletableFuture.completedFuture(Map.of(
+                "success", false,
+                "error", e.getMessage(),
+                "processing_time_ms", processingTime
+            ));
+        }
+    }
+
+    /**
+     * Capture fingerprint image (SYNCHRONOUS - for compatibility)
      */
     public Map<String, Object> captureFingerprint(int channel, int width, int height) {
         try {
