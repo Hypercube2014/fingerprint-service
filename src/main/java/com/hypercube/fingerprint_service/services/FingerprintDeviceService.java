@@ -9,6 +9,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 
@@ -65,12 +66,119 @@ public class FingerprintDeviceService {
     @Autowired
     private WebSocketMetricsService metricsService;
 
+    @Value("${fingerprint.suppress.debug:true}")
+    private boolean suppressDebug;
+
     public FingerprintDeviceService() {
         String os = System.getProperty("os.name").toLowerCase();
         this.isWindows = os.contains("win");
         this.isLinux = os.contains("linux") || os.contains("unix");
 
-        logger.info("Detected OS: {} (Windows: {}, Linux: {})", os, isWindows, isLinux);
+        // Redirect native library debug output to suppress coordinate printing
+        // This can be disabled by setting system property: -Dfingerprint.suppress.debug=false
+        // or by setting application property: fingerprint.suppress.debug=false
+        boolean systemSuppressDebug = Boolean.parseBoolean(System.getProperty("fingerprint.suppress.debug", "true"));
+        if (systemSuppressDebug) {
+            redirectNativeOutput();
+        }
+
+        logger.info("Detected OS: {} (Windows: {}, Linux: {}), System debug suppression: {}", os, isWindows, isLinux, systemSuppressDebug);
+    }
+
+    // Store original output streams for restoration
+    private java.io.PrintStream originalOut;
+    private java.io.PrintStream originalErr;
+    private boolean outputRedirected = false;
+
+    /**
+     * Redirect native library debug output to suppress coordinate printing
+     * This prevents the native DLLs from flooding the console with coordinate data
+     */
+    private void redirectNativeOutput() {
+        try {
+            // Store original streams
+            originalOut = System.out;
+            originalErr = System.err;
+            
+            logger.info("Native library debug output filtering enabled to suppress coordinate printing");
+        } catch (Exception e) {
+            logger.warn("Failed to setup native output filtering: {}", e.getMessage());
+        }
+    }
+
+    /**
+     * Temporarily suppress native library debug output during operations
+     */
+    private void suppressNativeDebugOutput() {
+        try {
+            // Check if debug suppression is enabled (both system property and application property)
+            boolean systemSuppressDebug = Boolean.parseBoolean(System.getProperty("fingerprint.suppress.debug", "true"));
+            if (!systemSuppressDebug || !suppressDebug) {
+                return;
+            }
+            
+            if (!outputRedirected) {
+                // Create a filtered output stream that suppresses coordinate patterns
+                java.io.OutputStream filteredOut = new java.io.OutputStream() {
+                    private final StringBuilder buffer = new StringBuilder();
+                    
+                    @Override
+                    public void write(int b) {
+                        char c = (char) b;
+                        buffer.append(c);
+                        
+                        // Check if we have a complete line
+                        if (c == '\n') {
+                            String line = buffer.toString().trim();
+                            buffer.setLength(0);
+                            
+                            // Filter out coordinate patterns like "32 32", "96 32", etc.
+                            if (!isCoordinatePattern(line)) {
+                                originalOut.print(line + "\n");
+                            }
+                        }
+                    }
+                    
+                    private boolean isCoordinatePattern(String line) {
+                        // Check if line matches coordinate pattern (two numbers separated by space)
+                        if (line.matches("^\\d+\\s+\\d+$")) {
+                            return true;
+                        }
+                        // Also check for patterns like "32 32\n" or similar
+                        if (line.matches("^\\d+\\s+\\d+\\s*$")) {
+                            return true;
+                        }
+                        return false;
+                    }
+                };
+                
+                // Set the filtered output streams
+                System.setOut(new java.io.PrintStream(filteredOut));
+                outputRedirected = true;
+            }
+        } catch (Exception e) {
+            logger.warn("Failed to suppress native debug output: {}", e.getMessage());
+        }
+    }
+
+    /**
+     * Restore native library debug output after operations
+     */
+    private void restoreNativeDebugOutput() {
+        try {
+            // Check if debug suppression is enabled (both system property and application property)
+            boolean systemSuppressDebug = Boolean.parseBoolean(System.getProperty("fingerprint.suppress.debug", "true"));
+            if (!systemSuppressDebug || !suppressDebug) {
+                return;
+            }
+            
+            if (outputRedirected && originalOut != null) {
+                System.setOut(originalOut);
+                outputRedirected = false;
+            }
+        } catch (Exception e) {
+            logger.warn("Failed to restore native debug output: {}", e.getMessage());
+        }
     }
 
     /**
@@ -240,6 +348,9 @@ public class FingerprintDeviceService {
     public Map<String, Object> captureFingerprint(int channel, int width, int height) {
         try {
             logger.info("Capturing fingerprint for channel: {} with dimensions: {}x{}", channel, width, height);
+            
+            // Temporarily suppress native library debug output during capture
+            suppressNativeDebugOutput();
 
             // Check platform compatibility
             if (!isWindows) {
@@ -317,6 +428,9 @@ public class FingerprintDeviceService {
                     "success", false,
                     "error_details", "Error capturing fingerprint: " + e.getMessage()
             );
+        } finally {
+            // Restore native debug output after capture
+            restoreNativeDebugOutput();
         }
     }
 
@@ -529,6 +643,9 @@ public class FingerprintDeviceService {
         try {
             logger.info("Splitting two thumbs for channel: {} with dimensions: {}x{} -> {}x{}",
                     channel, width, height, splitWidth, splitHeight);
+            
+            // Temporarily suppress native library debug output during split operation
+            suppressNativeDebugOutput();
 
             // Check platform compatibility
             if (!isWindows) {
@@ -776,6 +893,9 @@ public class FingerprintDeviceService {
                     "success", false,
                     "error_details", "Error splitting two thumbs: " + e.getMessage()
             );
+        } finally {
+            // Restore native debug output after split operation
+            restoreNativeDebugOutput();
         }
     }
 
@@ -853,6 +973,9 @@ public class FingerprintDeviceService {
     public boolean startPreviewStream(int channel, int width, int height) {
         try {
             logger.info("Starting real-time preview stream for channel: {} with dimensions: {}x{}", channel, width, height);
+            
+            // Suppress native library debug output during preview operations
+            suppressNativeDebugOutput();
 
             // Check platform compatibility
             if (!isWindows) {
