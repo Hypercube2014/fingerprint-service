@@ -19,30 +19,22 @@ public class WebSocketConfig implements WebSocketConfigurer {
     private static final int MAX_CONNECTIONS = 10;
     private final AtomicInteger connectionCount = new AtomicInteger(0);
 
-    @Autowired
-    private FingerprintWebSocketHandler fingerprintWebSocketHandler;
-
     @Override
     public void registerWebSocketHandlers(WebSocketHandlerRegistry registry) {
-        registry.addHandler(limitedWebSocketHandler(), "/ws/fingerprint")
+        registry.addHandler(fingerprintWebSocketHandler(), "/ws/fingerprint")
                 .setAllowedOrigins("*"); // Allow all origins for development
     }
 
     @Bean
     public FingerprintWebSocketHandler fingerprintWebSocketHandler() {
-        return new FingerprintWebSocketHandler();
+        return new LimitedWebSocketHandler();
     }
 
     /**
      * WebSocket handler with connection limits
      */
-    @Bean
-    public LimitedWebSocketHandler limitedWebSocketHandler() {
-        return new LimitedWebSocketHandler();
-    }
-
     private class LimitedWebSocketHandler extends FingerprintWebSocketHandler {
-        
+
         @Override
         public void afterConnectionEstablished(WebSocketSession session) throws Exception {
             if (connectionCount.get() >= MAX_CONNECTIONS) {
@@ -52,13 +44,13 @@ public class WebSocketConfig implements WebSocketConfigurer {
             connectionCount.incrementAndGet();
             super.afterConnectionEstablished(session);
         }
-        
+
         @Override
         public void afterConnectionClosed(WebSocketSession session, CloseStatus closeStatus) throws Exception {
             connectionCount.decrementAndGet();
             super.afterConnectionClosed(session, closeStatus);
         }
-        
+
         public int getActiveConnectionCount() {
             return connectionCount.get();
         }
