@@ -353,8 +353,8 @@ public class FingerprintDeviceService {
                 );
             }
 
-            // FIXED: Use 1 byte per pixel (8-bit grayscale) like working demo
-            byte[] rawData = new byte[width * height]; // 1 byte per pixel for 8-bit grayscale
+            // FIXED: Use 2 bytes per pixel like working C# sample to prevent buffer overflow
+            byte[] rawData = new byte[width * height * 2]; // 2 bytes per pixel (16-bit grayscale)
             ret = ID_FprCapLoad.ID_FprCapinterface.instance.LIVESCAN_GetFPRawData(channel, rawData);
 
             if (ret != 1) {
@@ -369,8 +369,11 @@ public class FingerprintDeviceService {
             // End capture
             ID_FprCapLoad.ID_FprCapinterface.instance.LIVESCAN_EndCapture(channel);
 
+            // Convert 2-byte per pixel data to 1-byte for processing and storage
+            byte[] convertedData = convert2ByteTo1Byte(rawData, width, height);
+            
             // Convert to base64
-            String base64Image = Base64.getEncoder().encodeToString(rawData);
+            String base64Image = Base64.getEncoder().encodeToString(convertedData);
 
             // Assess quality
             int quality = assessFingerprintQuality(rawData, width, height);
@@ -378,7 +381,7 @@ public class FingerprintDeviceService {
             // Store the image automatically as normal image file
             String customName = String.format("channel_%d_%dx%d", channel, width, height);
             FingerprintFileStorageService.FileStorageResult storageResult =
-                    fileStorageService.storeFingerprintImageAsImageOrganized(rawData, "standard", customName, width, height);
+                    fileStorageService.storeFingerprintImageAsImageOrganized(convertedData, "standard", customName, width, height);
 
             if (storageResult.isSuccess()) {
                 logger.info("Fingerprint captured and stored as image successfully for channel: {} with quality: {}. File: {}",
@@ -418,25 +421,24 @@ public class FingerprintDeviceService {
 
     /**
      * Assess fingerprint quality
-     * FIXED: Now handles 8-bit grayscale format properly
+     * FIXED: Now handles 2-byte per pixel format properly
      */
     private int assessFingerprintQuality(byte[] imageData, int width, int height) {
         try {
+            // Convert 2-byte per pixel data to 1-byte for MOSAIC quality assessment
+            byte[] convertedData = convert2ByteTo1Byte(imageData, width, height);
+            
             // First try MOSAIC quality assessment (like C# sample)
             if (GamcLoad.instance.MOSAIC_IsSupportFingerQuality() == 1) {
-                int quality = GamcLoad.instance.MOSAIC_FingerQuality(imageData, width, height);
+                int quality = GamcLoad.instance.MOSAIC_FingerQuality(convertedData, width, height);
                 logger.debug("MOSAIC_FingerQuality result: {}", quality);
                 if (quality >= 0) {
                     return quality;
                 }
             }
 
-            // FIXED: Skip ZAZ_FpStdLib quality assessment to avoid conversion errors
-            // The conversion method was causing IndexOutOfBounds errors
-            // Use basic quality assessment instead
-
             // Fallback to basic quality assessment
-            int basicQuality = calculateBasicQuality(imageData, width, height);
+            int basicQuality = calculateBasicQuality(convertedData, width, height);
             logger.debug("Basic quality assessment result: {}", basicQuality);
             return basicQuality;
 
@@ -445,6 +447,34 @@ public class FingerprintDeviceService {
             // Return default quality score
             return 75;
         }
+    }
+
+    /**
+     * Convert 2-byte per pixel data to 1-byte per pixel data
+     * Helper method for processing 16-bit grayscale data from native functions
+     */
+    private byte[] convert2ByteTo1Byte(byte[] imageData, int width, int height) {
+        if (imageData == null || imageData.length == 0) {
+            return new byte[0];
+        }
+
+        int pixelCount = width * height;
+        byte[] convertedData = new byte[pixelCount];
+
+        // Convert 2-byte per pixel to 1-byte per pixel
+        for (int i = 0; i < pixelCount; i++) {
+            int sourceIndex = i * 2;
+            if (sourceIndex + 1 < imageData.length) {
+                // Extract 8-bit grayscale from 2-byte data (little-endian 16-bit)
+                int pixel16 = (imageData[sourceIndex + 1] & 0xFF) << 8 | (imageData[sourceIndex] & 0xFF);
+                // Convert 16-bit to 8-bit by taking the high byte
+                convertedData[i] = (byte) (pixel16 >> 8);
+            } else {
+                convertedData[i] = 0; // Default to black
+            }
+        }
+
+        return convertedData;
     }
 
     /**
@@ -678,10 +708,10 @@ public class FingerprintDeviceService {
             }
 
             try {
-                // Step 5: Continuous capture loop like C# sample (FIXED - using 1 byte per pixel like working demo)
+                // Step 5: Continuous capture loop like C# sample (FIXED - using 2 bytes per pixel like working C# sample)
                 logger.info("Step 5: Starting continuous capture loop with green thumb indicators active");
-                // FIXED: Use 1 byte per pixel (8-bit grayscale) like working demo
-                byte[] rawData = new byte[width * height];
+                // FIXED: Use 2 bytes per pixel like working C# sample to prevent buffer overflow
+                byte[] rawData = new byte[width * height * 2];
 
                 long startTime = System.currentTimeMillis();
                 long timeout = 10000; // 10 seconds timeout like C# sample
@@ -990,7 +1020,7 @@ public class FingerprintDeviceService {
                 logger.info("Preview thread started for channel: {} (following C# sample pattern)", channel);
 
                 try {
-                    byte[] data = new byte[width * height]; // FIXED: 1 byte per pixel like working demo
+                    byte[] data = new byte[width * height * 2]; // FIXED: 2 bytes per pixel like working C# sample
                     long lastFrameTime = System.currentTimeMillis();
                     int frameCount = 0;
 
@@ -1128,8 +1158,11 @@ public class FingerprintDeviceService {
      */
     private Map<String, Object> processPreviewFrame(byte[] rawData, int width, int height, int quality) {
         try {
+            // Convert 2-byte per pixel data to 1-byte for preview processing
+            byte[] convertedData = convert2ByteTo1Byte(rawData, width, height);
+            
             // Apply image enhancement for better preview quality
-            byte[] enhancedData = enhanceFingerprintImage(rawData, width, height);
+            byte[] enhancedData = enhanceFingerprintImage(convertedData, width, height);
 
             // Convert enhanced data to base64
             String base64Image = Base64.getEncoder().encodeToString(enhancedData);
@@ -1257,7 +1290,7 @@ public class FingerprintDeviceService {
             logger.info("Set LED result: {}", ledRet);
 
             // Capture image
-            byte[] rawData = new byte[width * height]; // FIXED: 1 byte per pixel like working demo
+            byte[] rawData = new byte[width * height * 2]; // FIXED: 2 bytes per pixel like working C# sample
             int captureRet = ID_FprCapLoad.ID_FprCapinterface.instance.LIVESCAN_GetFPRawData(channel, rawData);
             logger.info("Capture result: {}", captureRet);
 
@@ -1620,7 +1653,7 @@ public class FingerprintDeviceService {
 
     /**
      * Convert image data to ZAZ_FpStdLib format (256x360) - FIXED VERSION
-     * This method properly converts from any image size to the 256x360 format expected by ZAZ_FpStdLib
+     * This method properly converts from 2-byte per pixel data to the 256x360 8-bit format expected by ZAZ_FpStdLib
      */
     private byte[] convertImageToZAZFormat(byte[] imageData, int width, int height) {
         try {
@@ -1645,19 +1678,23 @@ public class FingerprintDeviceService {
                     sourceX = Math.min(sourceX, width - 1);
                     sourceY = Math.min(sourceY, height - 1);
                     
-                    // Calculate source index
-                    int sourceIndex = sourceY * width + sourceX;
+                    // Calculate source index for 2-byte per pixel data
+                    int sourceIndex = (sourceY * width + sourceX) * 2;
                     
-                    // Ensure source index is within bounds
-                    if (sourceIndex < imageData.length) {
-                        zAZImage[y * targetWidth + x] = imageData[sourceIndex];
+                    // Ensure source index is within bounds (accounting for 2 bytes per pixel)
+                    if (sourceIndex + 1 < imageData.length) {
+                        // Extract 8-bit grayscale from 2-byte data
+                        // Assuming the format is little-endian 16-bit grayscale
+                        int pixel16 = (imageData[sourceIndex + 1] & 0xFF) << 8 | (imageData[sourceIndex] & 0xFF);
+                        // Convert 16-bit to 8-bit by taking the high byte
+                        zAZImage[y * targetWidth + x] = (byte) (pixel16 >> 8);
                     } else {
                         zAZImage[y * targetWidth + x] = 0; // Default to black
                     }
                 }
             }
 
-            logger.debug("Converted image from {}x{} to {}x{} ({} bytes)", 
+            logger.debug("Converted image from {}x{} (2-byte) to {}x{} (1-byte) ({} bytes)", 
                     width, height, targetWidth, targetHeight, zAZImage.length);
 
             return zAZImage;
