@@ -233,12 +233,14 @@ public class FingerprintWebSocketHandler implements WebSocketHandler {
                 if (templateResult != null && templateResult.get("error_details") != null) {
                     errorMsg += ": " + templateResult.get("error_details");
                 }
-                sendError(session, errorMsg);
+                // FIXED: Send single error message to avoid TEXT_PARTIAL_WRITING error
+                sendMessage(session, createMessage("error", Map.of("message", errorMsg)));
             }
             
         } catch (Exception e) {
             logger.error("Error capturing template for session {}: {}", sessionId, e.getMessage(), e);
-            sendError(session, "Error capturing template: " + e.getMessage());
+            // FIXED: Send single error message to avoid TEXT_PARTIAL_WRITING error
+            sendMessage(session, createMessage("error", Map.of("message", "Error capturing template: " + e.getMessage())));
         }
     }
     
@@ -330,7 +332,7 @@ public class FingerprintWebSocketHandler implements WebSocketHandler {
         return false;
     }
     
-    private void sendMessage(WebSocketSession session, String message) {
+    private synchronized void sendMessage(WebSocketSession session, String message) {
         try {
             if (session.isOpen()) {
                 session.sendMessage(new TextMessage(message));
