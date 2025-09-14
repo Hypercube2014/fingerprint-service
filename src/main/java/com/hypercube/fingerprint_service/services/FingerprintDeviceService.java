@@ -8,7 +8,16 @@ import com.hypercube.fingerprint_service.sdk.ZAZ_FpStdLib;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
+
+import jakarta.annotation.PreDestroy;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.Executor;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.TimeUnit;
 
 import java.util.Base64;
 import java.util.Map;
@@ -39,16 +48,180 @@ public class FingerprintDeviceService {
     @Autowired
     private FingerprintFileStorageService fileStorageService;
 
+    @Autowired
+    @Qualifier("fingerprintDeviceExecutor")
+    private Executor deviceExecutor;
+
+    @Autowired
+    @Qualifier("fingerprintPreviewExecutor")
+    private Executor previewExecutor;
+
+    @Autowired
+    @Qualifier("fingerprintHeavyExecutor")
+    private Executor heavyExecutor;
+
+    @Autowired
+    private CircuitBreakerService circuitBreaker;
+
+    @Autowired
+    private WebSocketMetricsService metricsService;
+
+    @Value("${fingerprint.suppress.debug:true}")
+    private boolean suppressDebug;
+
     public FingerprintDeviceService() {
         String os = System.getProperty("os.name").toLowerCase();
         this.isWindows = os.contains("win");
         this.isLinux = os.contains("linux") || os.contains("unix");
 
-        logger.info("Detected OS: {} (Windows: {}, Linux: {})", os, isWindows, isLinux);
+        // Redirect native library debug output to suppress coordinate printing
+        // This can be disabled by setting system property: -Dfingerprint.suppress.debug=false
+        // or by setting application property: fingerprint.suppress.debug=false
+        boolean systemSuppressDebug = Boolean.parseBoolean(System.getProperty("fingerprint.suppress.debug", "true"));
+        if (systemSuppressDebug) {
+            redirectNativeOutput();
+        }
+
+        logger.info("Detected OS: {} (Windows: {}, Linux: {}), System debug suppression: {}", os, isWindows, isLinux, systemSuppressDebug);
+    }
+
+    // Store original output streams for restoration
+    private java.io.PrintStream originalOut;
+    private java.io.PrintStream originalErr;
+    private boolean outputRedirected = false;
+
+    /**
+     * Redirect native library debug output to suppress coordinate printing
+     * This prevents the native DLLs from flooding the console with coordinate data
+     */
+    private void redirectNativeOutput() {
+        try {
+            // Store original streams
+            originalOut = System.out;
+            originalErr = System.err;
+            
+            logger.info("Native library debug output filtering enabled to suppress coordinate printing");
+        } catch (Exception e) {
+            logger.warn("Failed to setup native output filtering: {}", e.getMessage());
+        }
     }
 
     /**
-     * Initialize fingerprint device for a specific channel
+     * Temporarily suppress native library debug output during operations
+     */
+    private void suppressNativeDebugOutput() {
+        try {
+            // Check if debug suppression is enabled (both system property and application property)
+            boolean systemSuppressDebug = Boolean.parseBoolean(System.getProperty("fingerprint.suppress.debug", "true"));
+            if (!systemSuppressDebug || !suppressDebug) {
+                return;
+            }
+            
+            if (!outputRedirected) {
+                // Create a filtered output stream that suppresses coordinate patterns
+                java.io.OutputStream filteredOut = new java.io.OutputStream() {
+                    private final StringBuilder buffer = new StringBuilder();
+                    
+                    @Override
+                    public void write(int b) {
+                        char c = (char) b;
+                        buffer.append(c);
+                        
+                        // Check if we have a complete line
+                        if (c == '\n') {
+                            String line = buffer.toString().trim();
+                            buffer.setLength(0);
+                            
+                            // Filter out coordinate patterns like "32 32", "96 32", etc.
+                            if (!isCoordinatePattern(line)) {
+                                originalOut.print(line + "\n");
+                            }
+                        }
+                    }
+                    
+                    private boolean isCoordinatePattern(String line) {
+                        // Check if line matches coordinate pattern (two numbers separated by space)
+                        if (line.matches("^\\d+\\s+\\d+$")) {
+                            return true;
+                        }
+                        // Also check for patterns like "32 32\n" or similar
+                        if (line.matches("^\\d+\\s+\\d+\\s*$")) {
+                            return true;
+                        }
+                        return false;
+                    }
+                };
+                
+                // Set the filtered output streams
+                System.setOut(new java.io.PrintStream(filteredOut));
+                outputRedirected = true;
+            }
+        } catch (Exception e) {
+            logger.warn("Failed to suppress native debug output: {}", e.getMessage());
+        }
+    }
+
+    /**
+     * Restore native library debug output after operations
+     */
+    private void restoreNativeDebugOutput() {
+        try {
+            // Check if debug suppression is enabled (both system property and application property)
+            boolean systemSuppressDebug = Boolean.parseBoolean(System.getProperty("fingerprint.suppress.debug", "true"));
+            if (!systemSuppressDebug || !suppressDebug) {
+                return;
+            }
+            
+            if (outputRedirected && originalOut != null) {
+                System.setOut(originalOut);
+                outputRedirected = false;
+            }
+        } catch (Exception e) {
+            logger.warn("Failed to restore native debug output: {}", e.getMessage());
+        }
+    }
+
+    /**
+     * Cleanup resources on application shutdown
+     */
+    @PreDestroy
+    public void cleanup() {
+        logger.info("Shutting down FingerprintDeviceService...");
+        
+        // Stop all preview streams
+        for (Integer channel : previewRunning.keySet()) {
+            if (previewRunning.get(channel)) {
+                stopPreviewStream(channel);
+            }
+        }
+        
+        // Force cleanup of stuck threads
+        for (Map.Entry<Integer, Thread> entry : previewThreads.entrySet()) {
+            Thread thread = entry.getValue();
+            if (thread != null && thread.isAlive()) {
+                thread.interrupt();
+                try {
+                    thread.join(1000); // Wait 1 second
+                    if (thread.isAlive()) {
+                        logger.warn("Force terminating stuck preview thread for channel {}", entry.getKey());
+                        // Note: In Java, we can't force kill threads, but interrupt should work
+                    }
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            }
+        }
+        
+        previewThreads.clear();
+        previewRunning.clear();
+        previewStreams.clear();
+        latestFrames.clear();
+        
+        logger.info("FingerprintDeviceService shutdown complete");
+    }
+
+    /**
+     * Initialize fingerprint device for a specific channel (SYNCHRONOUS - for compatibility)
      */
     public boolean initializeDevice(int channel) {
         try {
@@ -92,11 +265,92 @@ public class FingerprintDeviceService {
     }
 
     /**
-     * Capture fingerprint image
+     * Initialize fingerprint device asynchronously
+     */
+    @Async("fingerprintDeviceExecutor")
+    public CompletableFuture<Map<String, Object>> initializeDeviceAsync(int channel) {
+        long startTime = System.currentTimeMillis();
+        try {
+            boolean success = initializeDevice(channel);
+            long processingTime = System.currentTimeMillis() - startTime;
+            
+            Map<String, Object> result = Map.of(
+                "success", success,
+                "channel", channel,
+                "processing_time_ms", processingTime
+            );
+            
+            if (success) {
+                circuitBreaker.recordSuccess();
+            } else {
+                circuitBreaker.recordFailure();
+            }
+            
+            return CompletableFuture.completedFuture(result);
+            
+        } catch (Exception e) {
+            circuitBreaker.recordFailure();
+            long processingTime = System.currentTimeMillis() - startTime;
+            logger.error("Error in async device initialization for channel {}: {}", channel, e.getMessage());
+            
+            return CompletableFuture.completedFuture(Map.of(
+                "success", false,
+                "channel", channel,
+                "error", e.getMessage(),
+                "processing_time_ms", processingTime
+            ));
+        }
+    }
+
+    /**
+     * Capture fingerprint image asynchronously
+     */
+    @Async("fingerprintDeviceExecutor")
+    public CompletableFuture<Map<String, Object>> captureFingerprintAsync(int channel, int width, int height) {
+        long startTime = System.currentTimeMillis();
+        try {
+            if (!circuitBreaker.isOperationAllowed()) {
+                return CompletableFuture.completedFuture(Map.of(
+                    "success", false,
+                    "error", "Circuit breaker is open - too many failures",
+                    "processing_time_ms", System.currentTimeMillis() - startTime
+                ));
+            }
+            
+            Map<String, Object> result = captureFingerprint(channel, width, height);
+            long processingTime = System.currentTimeMillis() - startTime;
+            
+            if (Boolean.TRUE.equals(result.get("success"))) {
+                circuitBreaker.recordSuccess();
+            } else {
+                circuitBreaker.recordFailure();
+            }
+            
+            result.put("processing_time_ms", processingTime);
+            return CompletableFuture.completedFuture(result);
+            
+        } catch (Exception e) {
+            circuitBreaker.recordFailure();
+            long processingTime = System.currentTimeMillis() - startTime;
+            logger.error("Error in async fingerprint capture for channel {}: {}", channel, e.getMessage());
+            
+            return CompletableFuture.completedFuture(Map.of(
+                "success", false,
+                "error", e.getMessage(),
+                "processing_time_ms", processingTime
+            ));
+        }
+    }
+
+    /**
+     * Capture fingerprint image (SYNCHRONOUS - for compatibility)
      */
     public Map<String, Object> captureFingerprint(int channel, int width, int height) {
         try {
             logger.info("Capturing fingerprint for channel: {} with dimensions: {}x{}", channel, width, height);
+            
+            // Temporarily suppress native library debug output during capture
+            suppressNativeDebugOutput();
 
             // Check platform compatibility
             if (!isWindows) {
@@ -117,8 +371,8 @@ public class FingerprintDeviceService {
                 );
             }
 
-            // Get fingerprint data (CORRECTED - using 2 bytes per pixel like C# sample)
-            byte[] rawData = new byte[width * height * 2]; // 2 bytes per pixel for 16-bit grayscale
+            // FIXED: Use 1 byte per pixel (8-bit grayscale) like working demo
+            byte[] rawData = new byte[width * height]; // 1 byte per pixel for 8-bit grayscale
             ret = ID_FprCapLoad.ID_FprCapinterface.instance.LIVESCAN_GetFPRawData(channel, rawData);
 
             if (ret != 1) {
@@ -174,11 +428,15 @@ public class FingerprintDeviceService {
                     "success", false,
                     "error_details", "Error capturing fingerprint: " + e.getMessage()
             );
+        } finally {
+            // Restore native debug output after capture
+            restoreNativeDebugOutput();
         }
     }
 
     /**
      * Assess fingerprint quality
+     * FIXED: Simplified for ZAZ_FpStdLib direct usage
      */
     private int assessFingerprintQuality(byte[] imageData, int width, int height) {
         try {
@@ -189,26 +447,6 @@ public class FingerprintDeviceService {
                 if (quality >= 0) {
                     return quality;
                 }
-            }
-
-            // Try ZAZ_FpStdLib quality assessment (like demo Java)
-            try {
-                // Convert to 256x360 format for ZAZ_FpStdLib
-                byte[] standardImageData = convertImageToStandardFormat(imageData, width, height);
-                long deviceHandle = ZAZ_FpStdLib.INSTANCE.ZAZ_FpStdLib_OpenDevice();
-                if (deviceHandle != 0) {
-                    try {
-                        int quality = ZAZ_FpStdLib.INSTANCE.ZAZ_FpStdLib_GetImageQuality(deviceHandle, standardImageData);
-                        logger.debug("ZAZ_FpStdLib_GetImageQuality result: {}", quality);
-                        if (quality >= 0) {
-                            return quality;
-                        }
-                    } finally {
-                        ZAZ_FpStdLib.INSTANCE.ZAZ_FpStdLib_CloseDevice(deviceHandle);
-                    }
-                }
-            } catch (Exception e) {
-                logger.debug("ZAZ_FpStdLib quality assessment failed: {}", e.getMessage());
             }
 
             // Fallback to basic quality assessment
@@ -225,30 +463,25 @@ public class FingerprintDeviceService {
 
     /**
      * Basic quality assessment algorithm
-     * Improved to handle 16-bit grayscale format (2 bytes per pixel)
+     * FIXED: Now handles 8-bit grayscale format (1 byte per pixel) like working demo
      */
     private int calculateBasicQuality(byte[] imageData, int width, int height) {
         if (imageData == null || imageData.length == 0) {
             return 0;
         }
 
-        // Handle 16-bit grayscale format (2 bytes per pixel)
+        // FIXED: Handle 8-bit grayscale format (1 byte per pixel) like working demo
         int pixelCount = width * height;
-        int expectedSize = pixelCount * 2; // 2 bytes per pixel
+        int expectedSize = pixelCount; // 1 byte per pixel
 
         if (imageData.length != expectedSize) {
             logger.warn("Image data size mismatch. Expected: {}, Got: {}", expectedSize, imageData.length);
             // Try to work with what we have
-            pixelCount = imageData.length / 2;
+            pixelCount = imageData.length;
         }
 
-        // Convert 16-bit grayscale to 8-bit for analysis
-        byte[] gray8Data = new byte[pixelCount];
-        for (int i = 0; i < pixelCount; i++) {
-            // Combine two bytes to get 16-bit value, then convert to 8-bit
-            int pixel16 = ((imageData[i * 2 + 1] & 0xFF) << 8) | (imageData[i * 2] & 0xFF);
-            gray8Data[i] = (byte) (pixel16 >> 8); // Take upper 8 bits
-        }
+        // FIXED: Use image data directly (already 8-bit grayscale)
+        byte[] gray8Data = imageData;
 
         // Calculate average intensity
         long totalIntensity = 0;
@@ -386,6 +619,9 @@ public class FingerprintDeviceService {
         try {
             logger.info("Splitting two thumbs for channel: {} with dimensions: {}x{} -> {}x{}",
                     channel, width, height, splitWidth, splitHeight);
+            
+            // Temporarily suppress native library debug output during split operation
+            suppressNativeDebugOutput();
 
             // Check platform compatibility
             if (!isWindows) {
@@ -456,10 +692,10 @@ public class FingerprintDeviceService {
             }
 
             try {
-                // Step 5: Continuous capture loop like C# sample (CORRECTED - using 2 bytes per pixel like C# sample)
+                // Step 5: Continuous capture loop like C# sample (FIXED - using 1 byte per pixel like working demo)
                 logger.info("Step 5: Starting continuous capture loop with green thumb indicators active");
-                // CORRECTED: C# sample uses w * h * 2 (2 bytes per pixel for 16-bit grayscale)
-                byte[] rawData = new byte[width * height * 2];
+                // FIXED: Use 1 byte per pixel (8-bit grayscale) like working demo
+                byte[] rawData = new byte[width * height];
 
                 long startTime = System.currentTimeMillis();
                 long timeout = 10000; // 10 seconds timeout like C# sample
@@ -633,6 +869,9 @@ public class FingerprintDeviceService {
                     "success", false,
                     "error_details", "Error splitting two thumbs: " + e.getMessage()
             );
+        } finally {
+            // Restore native debug output after split operation
+            restoreNativeDebugOutput();
         }
     }
 
@@ -710,6 +949,9 @@ public class FingerprintDeviceService {
     public boolean startPreviewStream(int channel, int width, int height) {
         try {
             logger.info("Starting real-time preview stream for channel: {} with dimensions: {}x{}", channel, width, height);
+            
+            // Suppress native library debug output during preview operations
+            suppressNativeDebugOutput();
 
             // Check platform compatibility
             if (!isWindows) {
@@ -762,7 +1004,7 @@ public class FingerprintDeviceService {
                 logger.info("Preview thread started for channel: {} (following C# sample pattern)", channel);
 
                 try {
-                    byte[] data = new byte[width * height * 2]; // CORRECTED: 2 bytes per pixel like C# sample
+                    byte[] data = new byte[width * height]; // FIXED: 1 byte per pixel like working demo
                     long lastFrameTime = System.currentTimeMillis();
                     int frameCount = 0;
 
@@ -1029,7 +1271,7 @@ public class FingerprintDeviceService {
             logger.info("Set LED result: {}", ledRet);
 
             // Capture image
-            byte[] rawData = new byte[width * height * 2]; // 2 bytes per pixel
+            byte[] rawData = new byte[width * height]; // FIXED: 1 byte per pixel like working demo
             int captureRet = ID_FprCapLoad.ID_FprCapinterface.instance.LIVESCAN_GetFPRawData(channel, rawData);
             logger.info("Capture result: {}", captureRet);
 
@@ -1205,7 +1447,7 @@ public class FingerprintDeviceService {
 
     /**
      * Capture fingerprint template using ZAZ_FpStdLib
-     * This method captures a fingerprint image and generates templates in the specified format
+     * FIXED: Following the working demo pattern exactly - use ZAZ_FpStdLib directly
      */
     public Map<String, Object> captureFingerprintTemplate(int channel, int width, int height, String format) {
         try {
@@ -1221,7 +1463,7 @@ public class FingerprintDeviceService {
                 );
             }
 
-            // Initialize ZAZ_FpStdLib device
+            // FIXED: Use ZAZ_FpStdLib directly like working demo (NOT LIVESCAN methods)
             long deviceHandle = ZAZ_FpStdLib.INSTANCE.ZAZ_FpStdLib_OpenDevice();
             if (deviceHandle == 0) {
                 logger.error("Failed to open ZAZ_FpStdLib device");
@@ -1238,50 +1480,44 @@ public class FingerprintDeviceService {
                     logger.warn("Device calibration failed with return code: {}", calibRet);
                 }
 
-                // Capture fingerprint image using the existing capture method
-                Map<String, Object> captureResult = captureFingerprint(channel, width, height);
-                if (!(Boolean) captureResult.get("success")) {
+                // FIXED: Use ZAZ_FpStdLib_GetImage directly (like working demo)
+                // ZAZ_FpStdLib expects 256x360 = 92160 bytes (8-bit grayscale)
+                int IMAGE_SIZE = 256 * 360;
+                byte[] imageData = new byte[IMAGE_SIZE];
+                
+                // FIXED: Capture image using ZAZ_FpStdLib_GetImage (like working demo)
+                int captureRet = ZAZ_FpStdLib.INSTANCE.ZAZ_FpStdLib_GetImage(deviceHandle, imageData);
+                if (captureRet != 1) {
+                    logger.error("Failed to capture fingerprint image. Return code: {}", captureRet);
                     return Map.of(
                             "success", false,
-                            "error_details", "Failed to capture fingerprint image: " + captureResult.get("error_details")
+                            "error_details", "Failed to capture fingerprint image. Return code: " + captureRet
                     );
                 }
 
-                // Get the image data from the capture result
-                String base64Image = (String) captureResult.get("image");
-                byte[] imageData = Base64.getDecoder().decode(base64Image);
+                // FIXED: Check quality using ZAZ_FpStdLib_GetImageQuality (like working demo)
+                int quality = ZAZ_FpStdLib.INSTANCE.ZAZ_FpStdLib_GetImageQuality(deviceHandle, imageData);
+                logger.info("ZAZ_FpStdLib quality assessment: {}", quality);
 
-                // Check image quality using the original image data first (like demo apps)
-                logger.info("Assessing quality for image: {}x{}, data size: {} bytes", width, height, imageData.length);
-                int quality = assessFingerprintQuality(imageData, width, height);
-                logger.info("Fingerprint image quality (original): {}", quality);
-
-                // Use more lenient quality threshold (like demo apps: < 10 is too low, < 50 is acceptable)
-                if (quality < 5) {
+                // FIXED: Use quality threshold like working demo (< 10 is too low, < 50 is acceptable)
+                if (quality < 10) {
                     return Map.of(
                             "success", false,
                             "error_details", "Image quality too low: " + quality + ". Please place finger properly on scanner."
                     );
                 }
 
-                // Convert image data to the format expected by ZAZ_FpStdLib (256x360)
-                // The ZAZ_FpStdLib expects 256x360 byte array, but we have width*height*2
-                // We need to resize/convert the image data
-                byte[] standardImageData = convertImageToStandardFormat(imageData, width, height);
-
-                // Also check quality with the standard format (for comparison)
-                int standardQuality = ZAZ_FpStdLib.INSTANCE.ZAZ_FpStdLib_GetImageQuality(deviceHandle, standardImageData);
-                logger.info("Fingerprint image quality (standard format): {}", standardQuality);
-
                 Map<String, Object> result = new HashMap<>();
                 result.put("success", true);
                 result.put("quality_score", quality);
                 result.put("template_size", 1024); // Standard template size
+                result.put("image_size", IMAGE_SIZE);
+                result.put("image_dimensions", "256x360");
 
-                // Generate templates based on format
+                // Generate templates based on format (like working demo)
                 if ("ISO".equals(format)) {
                     byte[] isoTemplate = new byte[1024];
-                    int isoRet = ZAZ_FpStdLib.INSTANCE.ZAZ_FpStdLib_CreateISOTemplate(deviceHandle, standardImageData, isoTemplate);
+                    int isoRet = ZAZ_FpStdLib.INSTANCE.ZAZ_FpStdLib_CreateISOTemplate(deviceHandle, imageData, isoTemplate);
                     if (isoRet > 0) {
                         String isoTemplateBase64 = Base64.getEncoder().encodeToString(isoTemplate);
                         result.put("template_data", isoTemplateBase64);
@@ -1294,7 +1530,7 @@ public class FingerprintDeviceService {
                     }
                 } else if ("ANSI".equals(format)) {
                     byte[] ansiTemplate = new byte[1024];
-                    int ansiRet = ZAZ_FpStdLib.INSTANCE.ZAZ_FpStdLib_CreateANSITemplate(deviceHandle, standardImageData, ansiTemplate);
+                    int ansiRet = ZAZ_FpStdLib.INSTANCE.ZAZ_FpStdLib_CreateANSITemplate(deviceHandle, imageData, ansiTemplate);
                     if (ansiRet > 0) {
                         String ansiTemplateBase64 = Base64.getEncoder().encodeToString(ansiTemplate);
                         result.put("template_data", ansiTemplateBase64);
@@ -1310,8 +1546,8 @@ public class FingerprintDeviceService {
                     byte[] isoTemplate = new byte[1024];
                     byte[] ansiTemplate = new byte[1024];
 
-                    int isoRet = ZAZ_FpStdLib.INSTANCE.ZAZ_FpStdLib_CreateISOTemplate(deviceHandle, standardImageData, isoTemplate);
-                    int ansiRet = ZAZ_FpStdLib.INSTANCE.ZAZ_FpStdLib_CreateANSITemplate(deviceHandle, standardImageData, ansiTemplate);
+                    int isoRet = ZAZ_FpStdLib.INSTANCE.ZAZ_FpStdLib_CreateISOTemplate(deviceHandle, imageData, isoTemplate);
+                    int ansiRet = ZAZ_FpStdLib.INSTANCE.ZAZ_FpStdLib_CreateANSITemplate(deviceHandle, imageData, ansiTemplate);
 
                     if (isoRet > 0 && ansiRet > 0) {
                         String isoTemplateBase64 = Base64.getEncoder().encodeToString(isoTemplate);
@@ -1362,35 +1598,8 @@ public class FingerprintDeviceService {
         }
     }
 
-    /**
-     * Convert image data to the standard format expected by ZAZ_FpStdLib (256x360)
-     */
-    private byte[] convertImageToStandardFormat(byte[] imageData, int width, int height) {
-        try {
-            // ZAZ_FpStdLib expects 256x360 = 92160 bytes
-            int standardSize = 256 * 360;
-            byte[] standardImage = new byte[standardSize];
-
-            // Simple resize by sampling or padding
-            if (imageData.length >= standardSize) {
-                // If input is larger, sample it
-                for (int i = 0; i < standardSize; i++) {
-                    int sourceIndex = (i * imageData.length) / standardSize;
-                    standardImage[i] = imageData[sourceIndex];
-                }
-            } else {
-                // If input is smaller, pad it
-                System.arraycopy(imageData, 0, standardImage, 0, Math.min(imageData.length, standardSize));
-            }
-
-            return standardImage;
-
-        } catch (Exception e) {
-            logger.warn("Error converting image to standard format: {}", e.getMessage());
-            // Return a default image if conversion fails
-            return new byte[256 * 360];
-        }
-    }
+    // NOTE: Image conversion methods removed - ZAZ_FpStdLib handles image capture directly
+    // No need for manual image conversion when using ZAZ_FpStdLib_GetImage()
 
     /**
      * Compare two fingerprint templates using ZAZ_FpStdLib
