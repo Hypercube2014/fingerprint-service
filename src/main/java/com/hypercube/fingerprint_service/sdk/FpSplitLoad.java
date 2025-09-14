@@ -14,7 +14,7 @@ public interface  FpSplitLoad extends Library {
     public  void FPSPLIT_Uninit();
 
 
-    public int FPSPLIT_DoSplit(byte[] pImgBuf, int nImgW, int nImgH, int nPreview, int nSplitW, int nSplitH, int pnFpNum,Pointer pInfo);
+    public int FPSPLIT_DoSplit(byte[] pImgBuf, int nImgW, int nImgH, int nPreview, int nSplitW, int nSplitH, IntByReference pnFpNum, Pointer pInfo);
 
 
 
