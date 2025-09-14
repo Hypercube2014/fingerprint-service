@@ -381,7 +381,7 @@ public class FingerprintDeviceService {
             // Store the image automatically as normal image file
             String customName = String.format("channel_%d_%dx%d", channel, width, height);
             FingerprintFileStorageService.FileStorageResult storageResult =
-                    fileStorageService.storeFingerprintImageAsImageOrganized(convertedData, "standard", customName, width, height);
+                    fileStorageService.storeFingerprintImageAsImageOrganized(rawData, "standard", customName, width, height);
 
             if (storageResult.isSuccess()) {
                 logger.info("Fingerprint captured and stored as image successfully for channel: {} with quality: {}. File: {}",

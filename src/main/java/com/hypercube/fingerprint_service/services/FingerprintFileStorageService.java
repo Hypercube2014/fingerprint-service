@@ -422,6 +422,7 @@ public class FingerprintFileStorageService {
     
     /**
      * Convert raw byte data to BufferedImage
+     * FIXED: Now handles both 1-byte and 2-byte per pixel data formats
      */
     private BufferedImage convertRawDataToImage(byte[] imageData, int width, int height) {
         // Create a grayscale BufferedImage
@@ -431,8 +432,34 @@ public class FingerprintFileStorageService {
         DataBufferByte dataBuffer = (DataBufferByte) bufferedImage.getRaster().getDataBuffer();
         byte[] data = dataBuffer.getData();
         
-        // Copy the raw data to the image buffer
-        System.arraycopy(imageData, 0, data, 0, Math.min(imageData.length, data.length));
+        // Check if we have 2-byte per pixel data (from native function) or 1-byte per pixel data
+        int expectedSize1Byte = width * height;
+        int expectedSize2Byte = width * height * 2;
+        
+        if (imageData.length == expectedSize2Byte) {
+            // Convert 2-byte per pixel data to 1-byte per pixel
+            logger.debug("Converting 2-byte per pixel data to 1-byte for BufferedImage");
+            for (int i = 0; i < expectedSize1Byte; i++) {
+                int sourceIndex = i * 2;
+                if (sourceIndex + 1 < imageData.length) {
+                    // Extract 8-bit grayscale from 2-byte data (little-endian 16-bit)
+                    int pixel16 = (imageData[sourceIndex + 1] & 0xFF) << 8 | (imageData[sourceIndex] & 0xFF);
+                    // Convert 16-bit to 8-bit by taking the high byte
+                    data[i] = (byte) (pixel16 >> 8);
+                } else {
+                    data[i] = 0; // Default to black
+                }
+            }
+        } else if (imageData.length == expectedSize1Byte) {
+            // Already 1-byte per pixel data, copy directly
+            logger.debug("Using 1-byte per pixel data directly for BufferedImage");
+            System.arraycopy(imageData, 0, data, 0, Math.min(imageData.length, data.length));
+        } else {
+            // Unexpected data size, try to handle gracefully
+            logger.warn("Unexpected image data size: {} bytes (expected {} or {} bytes)", 
+                       imageData.length, expectedSize1Byte, expectedSize2Byte);
+            System.arraycopy(imageData, 0, data, 0, Math.min(imageData.length, data.length));
+        }
         
         return bufferedImage;
     }
