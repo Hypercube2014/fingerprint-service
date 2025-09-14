@@ -431,25 +431,9 @@ public class FingerprintDeviceService {
                 }
             }
 
-            // Try ZAZ_FpStdLib quality assessment (like demo Java)
-            try {
-                // Convert to 256x360 format for ZAZ_FpStdLib
-                byte[] standardImageData = convertImageToZAZFormat(imageData, width, height);
-                long deviceHandle = ZAZ_FpStdLib.INSTANCE.ZAZ_FpStdLib_OpenDevice();
-                if (deviceHandle != 0) {
-                    try {
-                        int quality = ZAZ_FpStdLib.INSTANCE.ZAZ_FpStdLib_GetImageQuality(deviceHandle, standardImageData);
-                        logger.debug("ZAZ_FpStdLib_GetImageQuality result: {}", quality);
-                        if (quality >= 0) {
-                            return quality;
-                        }
-                    } finally {
-                        ZAZ_FpStdLib.INSTANCE.ZAZ_FpStdLib_CloseDevice(deviceHandle);
-                    }
-                }
-            } catch (Exception e) {
-                logger.debug("ZAZ_FpStdLib quality assessment failed: {}", e.getMessage());
-            }
+            // FIXED: Skip ZAZ_FpStdLib quality assessment to avoid conversion errors
+            // The conversion method was causing IndexOutOfBounds errors
+            // Use basic quality assessment instead
 
             // Fallback to basic quality assessment
             int basicQuality = calculateBasicQuality(imageData, width, height);
