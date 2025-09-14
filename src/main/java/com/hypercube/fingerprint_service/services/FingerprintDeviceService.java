@@ -371,8 +371,8 @@ public class FingerprintDeviceService {
                 );
             }
 
-            // Get fingerprint data (CORRECTED - using 2 bytes per pixel like C# sample)
-            byte[] rawData = new byte[width * height * 2]; // 2 bytes per pixel for 16-bit grayscale
+            // FIXED: Use 1 byte per pixel (8-bit grayscale) like working demo
+            byte[] rawData = new byte[width * height]; // 1 byte per pixel for 8-bit grayscale
             ret = ID_FprCapLoad.ID_FprCapinterface.instance.LIVESCAN_GetFPRawData(channel, rawData);
 
             if (ret != 1) {
@@ -436,6 +436,7 @@ public class FingerprintDeviceService {
 
     /**
      * Assess fingerprint quality
+     * FIXED: Now handles 8-bit grayscale format properly
      */
     private int assessFingerprintQuality(byte[] imageData, int width, int height) {
         try {
@@ -451,7 +452,7 @@ public class FingerprintDeviceService {
             // Try ZAZ_FpStdLib quality assessment (like demo Java)
             try {
                 // Convert to 256x360 format for ZAZ_FpStdLib
-                byte[] standardImageData = convertImageToStandardFormat(imageData, width, height);
+                byte[] standardImageData = convertImageToZAZFormat(imageData, width, height);
                 long deviceHandle = ZAZ_FpStdLib.INSTANCE.ZAZ_FpStdLib_OpenDevice();
                 if (deviceHandle != 0) {
                     try {
@@ -482,30 +483,25 @@ public class FingerprintDeviceService {
 
     /**
      * Basic quality assessment algorithm
-     * Improved to handle 16-bit grayscale format (2 bytes per pixel)
+     * FIXED: Now handles 8-bit grayscale format (1 byte per pixel) like working demo
      */
     private int calculateBasicQuality(byte[] imageData, int width, int height) {
         if (imageData == null || imageData.length == 0) {
             return 0;
         }
 
-        // Handle 16-bit grayscale format (2 bytes per pixel)
+        // FIXED: Handle 8-bit grayscale format (1 byte per pixel) like working demo
         int pixelCount = width * height;
-        int expectedSize = pixelCount * 2; // 2 bytes per pixel
+        int expectedSize = pixelCount; // 1 byte per pixel
 
         if (imageData.length != expectedSize) {
             logger.warn("Image data size mismatch. Expected: {}, Got: {}", expectedSize, imageData.length);
             // Try to work with what we have
-            pixelCount = imageData.length / 2;
+            pixelCount = imageData.length;
         }
 
-        // Convert 16-bit grayscale to 8-bit for analysis
-        byte[] gray8Data = new byte[pixelCount];
-        for (int i = 0; i < pixelCount; i++) {
-            // Combine two bytes to get 16-bit value, then convert to 8-bit
-            int pixel16 = ((imageData[i * 2 + 1] & 0xFF) << 8) | (imageData[i * 2] & 0xFF);
-            gray8Data[i] = (byte) (pixel16 >> 8); // Take upper 8 bits
-        }
+        // FIXED: Use image data directly (already 8-bit grayscale)
+        byte[] gray8Data = imageData;
 
         // Calculate average intensity
         long totalIntensity = 0;
@@ -716,10 +712,10 @@ public class FingerprintDeviceService {
             }
 
             try {
-                // Step 5: Continuous capture loop like C# sample (CORRECTED - using 2 bytes per pixel like C# sample)
+                // Step 5: Continuous capture loop like C# sample (FIXED - using 1 byte per pixel like working demo)
                 logger.info("Step 5: Starting continuous capture loop with green thumb indicators active");
-                // CORRECTED: C# sample uses w * h * 2 (2 bytes per pixel for 16-bit grayscale)
-                byte[] rawData = new byte[width * height * 2];
+                // FIXED: Use 1 byte per pixel (8-bit grayscale) like working demo
+                byte[] rawData = new byte[width * height];
 
                 long startTime = System.currentTimeMillis();
                 long timeout = 10000; // 10 seconds timeout like C# sample
@@ -1028,7 +1024,7 @@ public class FingerprintDeviceService {
                 logger.info("Preview thread started for channel: {} (following C# sample pattern)", channel);
 
                 try {
-                    byte[] data = new byte[width * height * 2]; // CORRECTED: 2 bytes per pixel like C# sample
+                    byte[] data = new byte[width * height]; // FIXED: 1 byte per pixel like working demo
                     long lastFrameTime = System.currentTimeMillis();
                     int frameCount = 0;
 
@@ -1295,7 +1291,7 @@ public class FingerprintDeviceService {
             logger.info("Set LED result: {}", ledRet);
 
             // Capture image
-            byte[] rawData = new byte[width * height * 2]; // 2 bytes per pixel
+            byte[] rawData = new byte[width * height]; // FIXED: 1 byte per pixel like working demo
             int captureRet = ID_FprCapLoad.ID_FprCapinterface.instance.LIVESCAN_GetFPRawData(channel, rawData);
             logger.info("Capture result: {}", captureRet);
 
@@ -1472,6 +1468,7 @@ public class FingerprintDeviceService {
     /**
      * Capture fingerprint template using ZAZ_FpStdLib
      * This method captures a fingerprint image and generates templates in the specified format
+     * FIXED: Following the working demo pattern exactly
      */
     public Map<String, Object> captureFingerprintTemplate(int channel, int width, int height, String format) {
         try {
@@ -1486,6 +1483,73 @@ public class FingerprintDeviceService {
                         "error_details", "Platform not supported. This SDK requires Windows."
                 );
             }
+
+            // FIXED: Initialize device first (like working demo)
+            int deviceRet = ID_FprCapLoad.ID_FprCapinterface.instance.LIVESCAN_Init();
+            if (deviceRet != 1) {
+                logger.error("Device initialization failed with return code: {}", deviceRet);
+                return Map.of(
+                        "success", false,
+                        "error_details", "Device initialization failed with return code: " + deviceRet
+                );
+            }
+
+            // FIXED: Initialize MOSAIC library (like working demo)
+            try {
+                int mosaicRet = GamcLoad.instance.MOSAIC_Init();
+                if (mosaicRet == 1) {
+                    logger.info("MOSAIC library initialized successfully");
+                } else {
+                    logger.warn("MOSAIC library initialization failed with return code: {}", mosaicRet);
+                }
+            } catch (Exception e) {
+                logger.warn("Error initializing MOSAIC library: {}", e.getMessage());
+            }
+
+            // FIXED: Set capture window (like working demo)
+            int windowRet = ID_FprCapLoad.ID_FprCapinterface.instance.LIVESCAN_SetCaptWindow(0, 0, 0, width, height);
+            if (windowRet != 1) {
+                logger.warn("Failed to set capture window, return code: {}", windowRet);
+            }
+
+            // FIXED: Capture image using LIVESCAN methods (like working demo)
+            // Use 1 byte per pixel (8-bit grayscale) like the working demo
+            byte[] rawData = new byte[width * height]; // FIXED: 1 byte per pixel, not 2
+            int captureRet = ID_FprCapLoad.ID_FprCapinterface.instance.LIVESCAN_GetFPRawData(channel, rawData);
+            
+            if (captureRet != 1) {
+                logger.error("Failed to capture fingerprint data. Return code: {}", captureRet);
+                return Map.of(
+                        "success", false,
+                        "error_details", "Failed to capture fingerprint data. Return code: " + captureRet
+                );
+            }
+
+            // FIXED: Check quality using MOSAIC (like working demo)
+            int quality = 0;
+            try {
+                if (GamcLoad.instance.MOSAIC_IsSupportFingerQuality() == 1) {
+                    quality = GamcLoad.instance.MOSAIC_FingerQuality(rawData, width, height);
+                    logger.info("MOSAIC quality assessment: {}", quality);
+                } else {
+                    quality = calculateBasicQuality(rawData, width, height);
+                    logger.info("Basic quality assessment: {}", quality);
+                }
+            } catch (Exception e) {
+                logger.warn("Quality assessment failed, using default: {}", e.getMessage());
+                quality = 75; // Default quality
+            }
+
+            // FIXED: Use more lenient quality threshold (like working demo)
+            if (quality < 10) {
+                return Map.of(
+                        "success", false,
+                        "error_details", "Image quality too low: " + quality + ". Please place finger properly on scanner."
+                );
+            }
+
+            // FIXED: Convert to ZAZ_FpStdLib format (256x360) properly
+            byte[] standardImageData = convertImageToZAZFormat(rawData, width, height);
 
             // Initialize ZAZ_FpStdLib device
             long deviceHandle = ZAZ_FpStdLib.INSTANCE.ZAZ_FpStdLib_OpenDevice();
@@ -1504,40 +1568,9 @@ public class FingerprintDeviceService {
                     logger.warn("Device calibration failed with return code: {}", calibRet);
                 }
 
-                // Capture fingerprint image using the existing capture method
-                Map<String, Object> captureResult = captureFingerprint(channel, width, height);
-                if (!(Boolean) captureResult.get("success")) {
-                    return Map.of(
-                            "success", false,
-                            "error_details", "Failed to capture fingerprint image: " + captureResult.get("error_details")
-                    );
-                }
-
-                // Get the image data from the capture result
-                String base64Image = (String) captureResult.get("image");
-                byte[] imageData = Base64.getDecoder().decode(base64Image);
-
-                // Check image quality using the original image data first (like demo apps)
-                logger.info("Assessing quality for image: {}x{}, data size: {} bytes", width, height, imageData.length);
-                int quality = assessFingerprintQuality(imageData, width, height);
-                logger.info("Fingerprint image quality (original): {}", quality);
-
-                // Use more lenient quality threshold (like demo apps: < 10 is too low, < 50 is acceptable)
-                if (quality < 5) {
-                    return Map.of(
-                            "success", false,
-                            "error_details", "Image quality too low: " + quality + ". Please place finger properly on scanner."
-                    );
-                }
-
-                // Convert image data to the format expected by ZAZ_FpStdLib (256x360)
-                // The ZAZ_FpStdLib expects 256x360 byte array, but we have width*height*2
-                // We need to resize/convert the image data
-                byte[] standardImageData = convertImageToStandardFormat(imageData, width, height);
-
-                // Also check quality with the standard format (for comparison)
+                // FIXED: Check quality with ZAZ_FpStdLib format
                 int standardQuality = ZAZ_FpStdLib.INSTANCE.ZAZ_FpStdLib_GetImageQuality(deviceHandle, standardImageData);
-                logger.info("Fingerprint image quality (standard format): {}", standardQuality);
+                logger.info("ZAZ_FpStdLib quality assessment: {}", standardQuality);
 
                 Map<String, Object> result = new HashMap<>();
                 result.put("success", true);
@@ -1630,6 +1663,7 @@ public class FingerprintDeviceService {
 
     /**
      * Convert image data to the standard format expected by ZAZ_FpStdLib (256x360)
+     * FIXED: Proper conversion from any size to 256x360
      */
     private byte[] convertImageToStandardFormat(byte[] imageData, int width, int height) {
         try {
@@ -1653,6 +1687,57 @@ public class FingerprintDeviceService {
 
         } catch (Exception e) {
             logger.warn("Error converting image to standard format: {}", e.getMessage());
+            // Return a default image if conversion fails
+            return new byte[256 * 360];
+        }
+    }
+
+    /**
+     * Convert image data to ZAZ_FpStdLib format (256x360) - FIXED VERSION
+     * This method properly converts from any image size to the 256x360 format expected by ZAZ_FpStdLib
+     */
+    private byte[] convertImageToZAZFormat(byte[] imageData, int width, int height) {
+        try {
+            // ZAZ_FpStdLib expects 256x360 = 92160 bytes (8-bit grayscale)
+            int targetWidth = 256;
+            int targetHeight = 360;
+            int targetSize = targetWidth * targetHeight;
+            byte[] zAZImage = new byte[targetSize];
+
+            // Calculate scaling factors
+            double scaleX = (double) width / targetWidth;
+            double scaleY = (double) height / targetHeight;
+
+            // Resize image using nearest neighbor interpolation
+            for (int y = 0; y < targetHeight; y++) {
+                for (int x = 0; x < targetWidth; x++) {
+                    // Calculate source coordinates
+                    int sourceX = (int) (x * scaleX);
+                    int sourceY = (int) (y * scaleY);
+                    
+                    // Ensure coordinates are within bounds
+                    sourceX = Math.min(sourceX, width - 1);
+                    sourceY = Math.min(sourceY, height - 1);
+                    
+                    // Calculate source index
+                    int sourceIndex = sourceY * width + sourceX;
+                    
+                    // Ensure source index is within bounds
+                    if (sourceIndex < imageData.length) {
+                        zAZImage[y * targetWidth + x] = imageData[sourceIndex];
+                    } else {
+                        zAZImage[y * targetWidth + x] = 0; // Default to black
+                    }
+                }
+            }
+
+            logger.debug("Converted image from {}x{} to {}x{} ({} bytes)", 
+                    width, height, targetWidth, targetHeight, zAZImage.length);
+
+            return zAZImage;
+
+        } catch (Exception e) {
+            logger.warn("Error converting image to ZAZ format: {}", e.getMessage());
             // Return a default image if conversion fails
             return new byte[256 * 360];
         }
