@@ -477,6 +477,82 @@ public class FingerprintController {
     }
     
     /**
+     * Test simple capture with quality assessment (no template generation)
+     * This endpoint helps debug quality issues without the complexity of template generation
+     */
+    @PostMapping("/test/capture-quality")
+    public ResponseEntity<Map<String, Object>> testCaptureQuality(
+            @RequestParam(defaultValue = "0") int channel,
+            @RequestParam(defaultValue = "1600") int width,
+            @RequestParam(defaultValue = "1500") int height) {
+        
+        try {
+            // Check platform compatibility first
+            if (!deviceService.isPlatformSupported()) {
+                return ResponseEntity.status(400).body(Map.of(
+                    "success", false,
+                    "message", "Platform not supported. This SDK requires Windows.",
+                    "platform_info", deviceService.getPlatformInfo(),
+                    "timestamp", System.currentTimeMillis()
+                ));
+            }
+            
+            // Check if device is initialized
+            if (!deviceService.isDeviceInitialized(channel)) {
+                logger.info("Device not initialized for channel {}, attempting to initialize", channel);
+                boolean initSuccess = deviceService.initializeDevice(channel);
+                if (!initSuccess) {
+                    return ResponseEntity.status(500).body(Map.of(
+                        "success", false,
+                        "message", "Device not initialized and initialization failed",
+                        "channel", channel,
+                        "platform_info", deviceService.getPlatformInfo(),
+                        "timestamp", System.currentTimeMillis()
+                    ));
+                }
+            }
+            
+            // Test simple capture and quality assessment
+            Map<String, Object> captureResult = deviceService.captureFingerprint(channel, width, height);
+            
+            if ((Boolean) captureResult.get("success")) {
+                Map<String, Object> response = new HashMap<>();
+                response.put("success", true);
+                response.put("message", "Fingerprint captured and quality assessed successfully");
+                response.put("width", width);
+                response.put("height", height);
+                response.put("quality_score", captureResult.get("quality_score"));
+                response.put("quality_message", captureResult.get("quality_message"));
+                response.put("channel", channel);
+                response.put("captured_at", new Date());
+                response.put("platform_info", deviceService.getPlatformInfo());
+                response.put("timestamp", System.currentTimeMillis());
+                
+                return ResponseEntity.ok(response);
+            } else {
+                return ResponseEntity.status(500).body(Map.of(
+                    "success", false,
+                    "message", "Failed to capture fingerprint",
+                    "error_details", captureResult.get("error_details"),
+                    "channel", channel,
+                    "platform_info", deviceService.getPlatformInfo(),
+                    "timestamp", System.currentTimeMillis()
+                ));
+            }
+            
+        } catch (Exception e) {
+            logger.error("Error testing capture quality for channel {}: {}", channel, e.getMessage(), e);
+            return ResponseEntity.status(500).body(Map.of(
+                "success", false,
+                "message", "Error testing capture quality: " + e.getMessage(),
+                "channel", channel,
+                "platform_info", deviceService.getPlatformInfo(),
+                "timestamp", System.currentTimeMillis()
+            ));
+        }
+    }
+    
+    /**
      * Validate image quality without capturing
      * This endpoint helps debug quality issues by testing the quality assessment methods
      */

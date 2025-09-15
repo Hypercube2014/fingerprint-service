@@ -220,7 +220,22 @@ public class FingerprintDeviceService {
                 logger.debug("MOSAIC quality assessment failed: {}", e.getMessage());
             }
             
-            // Method 3: Fallback to basic quality assessment
+            // Method 3: Try MOSAIC quality assessment on 16-bit data directly
+            try {
+                if (GamcLoad.instance.MOSAIC_IsSupportFingerQuality() == 1) {
+                    // Convert 16-bit data to 8-bit for MOSAIC
+                    byte[] eightBitData = convert16BitTo8Bit(imageData, width, height);
+                    int mosaicQuality = GamcLoad.instance.MOSAIC_FingerQuality(eightBitData, width, height);
+                    logger.debug("MOSAIC quality assessment (8-bit): {}", mosaicQuality);
+                    if (mosaicQuality >= 0) {
+                        return Math.min(100, mosaicQuality);
+                    }
+                }
+            } catch (Exception e) {
+                logger.debug("MOSAIC quality assessment (8-bit) failed: {}", e.getMessage());
+            }
+            
+            // Method 4: Fallback to basic quality assessment
             int basicQuality = calculateBasicQuality(imageData, width, height);
             logger.debug("Basic quality assessment: {}", basicQuality);
             return basicQuality;
@@ -233,27 +248,30 @@ public class FingerprintDeviceService {
     }
     
     /**
-     * Basic quality assessment algorithm
+     * Basic quality assessment algorithm for 16-bit image data
      */
     private int calculateBasicQuality(byte[] imageData, int width, int height) {
         if (imageData == null || imageData.length == 0) {
             return 0;
         }
 
+        // Convert 16-bit data to 8-bit for analysis
+        byte[] eightBitData = convert16BitTo8Bit(imageData, width, height);
+        
         // Calculate average intensity
         long totalIntensity = 0;
-        for (byte b : imageData) {
+        for (byte b : eightBitData) {
             totalIntensity += (b & 0xFF);
         }
-        double avgIntensity = (double) totalIntensity / imageData.length;
+        double avgIntensity = (double) totalIntensity / eightBitData.length;
 
         // Calculate standard deviation
         double variance = 0;
-        for (byte b : imageData) {
+        for (byte b : eightBitData) {
             double diff = (b & 0xFF) - avgIntensity;
             variance += diff * diff;
         }
-        variance /= imageData.length;
+        variance /= eightBitData.length;
         double stdDev = Math.sqrt(variance);
 
         // Quality score based on contrast and brightness
@@ -270,15 +288,40 @@ public class FingerprintDeviceService {
         
         // Check for non-zero pixels (fingerprint presence)
         int nonZeroPixels = 0;
-        for (byte b : imageData) {
+        for (byte b : eightBitData) {
             if ((b & 0xFF) > 0) nonZeroPixels++;
         }
-        double coverage = (double) nonZeroPixels / imageData.length;
+        double coverage = (double) nonZeroPixels / eightBitData.length;
         
         if (coverage > 0.3 && coverage < 0.8) quality += 30;
         else if (coverage > 0.1 && coverage < 0.9) quality += 15;
 
         return Math.min(100, Math.max(0, quality));
+    }
+    
+    /**
+     * Convert 16-bit image data to 8-bit by taking the high byte
+     */
+    private byte[] convert16BitTo8Bit(byte[] imageData, int width, int height) {
+        try {
+            int pixelCount = width * height;
+            byte[] eightBitData = new byte[pixelCount];
+            
+            for (int i = 0; i < pixelCount; i++) {
+                int srcIndex = i * 2;
+                if (srcIndex + 1 < imageData.length) {
+                    // Take the high byte (second byte) from 16-bit data
+                    eightBitData[i] = imageData[srcIndex + 1];
+                } else {
+                    eightBitData[i] = 0;
+                }
+            }
+            
+            return eightBitData;
+        } catch (Exception e) {
+            logger.warn("Error converting 16-bit to 8-bit: {}", e.getMessage());
+            return new byte[width * height];
+        }
     }
     
     /**
@@ -1360,29 +1403,52 @@ public class FingerprintDeviceService {
     
     /**
      * Convert image data to the standard format expected by ZAZ_FpStdLib (256x360)
+     * Handles 16-bit input data (2 bytes per pixel) and converts to 8-bit output
      */
     private byte[] convertImageToStandardFormat(byte[] imageData, int width, int height) {
         try {
-            // ZAZ_FpStdLib expects 256x360 = 92160 bytes
+            // ZAZ_FpStdLib expects 256x360 = 92160 bytes (8-bit)
             int standardSize = 256 * 360;
             byte[] standardImage = new byte[standardSize];
             
-            // Simple resize by sampling or padding
-            if (imageData.length >= standardSize) {
-                // If input is larger, sample it
-                for (int i = 0; i < standardSize; i++) {
-                    int sourceIndex = (i * imageData.length) / standardSize;
-                    standardImage[i] = imageData[sourceIndex];
-                }
-            } else {
-                // If input is smaller, pad it
-                System.arraycopy(imageData, 0, standardImage, 0, Math.min(imageData.length, standardSize));
+            // Calculate expected input size (16-bit data: 2 bytes per pixel)
+            int expectedInputSize = width * height * 2;
+            
+            logger.debug("Converting image: {}x{} ({} bytes) -> 256x360 ({} bytes)", 
+                width, height, imageData.length, standardSize);
+            
+            if (imageData.length != expectedInputSize) {
+                logger.warn("Unexpected image data size: {} bytes, expected: {} bytes", 
+                    imageData.length, expectedInputSize);
             }
             
+            // Convert 16-bit data to 8-bit by taking every other byte (high byte)
+            // and resizing to 256x360
+            for (int y = 0; y < 360; y++) {
+                for (int x = 0; x < 256; x++) {
+                    // Calculate source coordinates (scale from 256x360 to width x height)
+                    int srcX = (x * width) / 256;
+                    int srcY = (y * height) / 360;
+                    
+                    // Calculate source index in 16-bit data (2 bytes per pixel)
+                    int srcIndex = (srcY * width + srcX) * 2;
+                    
+                    // Bounds check
+                    if (srcIndex + 1 < imageData.length) {
+                        // Take the high byte (second byte) from 16-bit data
+                        standardImage[y * 256 + x] = imageData[srcIndex + 1];
+                    } else {
+                        // Pad with zero if out of bounds
+                        standardImage[y * 256 + x] = 0;
+                    }
+                }
+            }
+            
+            logger.debug("Image conversion completed successfully");
             return standardImage;
             
         } catch (Exception e) {
-            logger.warn("Error converting image to standard format: {}", e.getMessage());
+            logger.error("Error converting image to standard format: {}", e.getMessage(), e);
             // Return a default image if conversion fails
             return new byte[256 * 360];
         }
