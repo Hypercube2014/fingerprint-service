@@ -458,7 +458,9 @@ public class FingerprintFileStorageService {
             // Unexpected data size, try to handle gracefully
             logger.warn("Unexpected image data size: {} bytes (expected {} or {} bytes)", 
                        imageData.length, expectedSize1Byte, expectedSize2Byte);
-            System.arraycopy(imageData, 0, data, 0, Math.min(imageData.length, data.length));
+            // FIXED: Only copy what fits in the target buffer
+            int copyLength = Math.min(imageData.length, data.length);
+            System.arraycopy(imageData, 0, data, 0, copyLength);
         }
         
         return bufferedImage;
