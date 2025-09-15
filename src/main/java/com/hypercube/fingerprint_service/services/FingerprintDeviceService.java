@@ -117,8 +117,8 @@ public class FingerprintDeviceService {
                 );
             }
             
-            // Get fingerprint data (using 1 byte per pixel for 8-bit grayscale like working implementations)
-            byte[] rawData = new byte[width * height]; // 1 byte per pixel for 8-bit grayscale
+            // Get fingerprint data (CORRECTED - using 2 bytes per pixel like C# sample)
+            byte[] rawData = new byte[width * height * 2]; // 2 bytes per pixel for 16-bit grayscale
             ret = ID_FprCapLoad.ID_FprCapinterface.instance.LIVESCAN_GetFPRawData(channel, rawData);
             
             if (ret != 1) {
@@ -184,27 +184,10 @@ public class FingerprintDeviceService {
     
     /**
      * Assess fingerprint quality using multiple methods for better accuracy
-     * Prioritizes MOSAIC quality assessment as it's more reliable for this hardware
      */
     private int assessFingerprintQuality(byte[] imageData, int width, int height) {
         try {
-            // Use MOSAIC quality assessment (most reliable for this hardware)
-            try {
-                if (GamcLoad.instance.MOSAIC_IsSupportFingerQuality() == 1) {
-                    // Use data directly as 8-bit grayscale (like working implementations)
-                    int mosaicQuality = GamcLoad.instance.MOSAIC_FingerQuality(imageData, width, height);
-                    logger.debug("MOSAIC quality assessment: {}", mosaicQuality);
-                    if (mosaicQuality >= 0) {
-                        int quality = Math.min(100, mosaicQuality);
-                        logger.debug("Using MOSAIC quality assessment: {}", quality);
-                        return quality;
-                    }
-                }
-            } catch (Exception e) {
-                logger.debug("MOSAIC quality assessment failed: {}", e.getMessage());
-            }
-            
-            // Method 3: Try ZAZ_FpStdLib quality assessment (less reliable for this hardware)
+            // Method 1: Try ZAZ_FpStdLib quality assessment (most reliable for templates)
             try {
                 long deviceHandle = ZAZ_FpStdLib.INSTANCE.ZAZ_FpStdLib_OpenDevice();
                 if (deviceHandle != 0) {
@@ -213,19 +196,43 @@ public class FingerprintDeviceService {
                         byte[] standardImage = convertImageToStandardFormat(imageData, width, height);
                         int quality = ZAZ_FpStdLib.INSTANCE.ZAZ_FpStdLib_GetImageQuality(deviceHandle, standardImage);
                         logger.debug("ZAZ_FpStdLib quality assessment: {}", quality);
-                        // Only use ZAZ quality if it's reasonable (not too low)
-                        if (quality > 10) {
-                            logger.debug("Using ZAZ_FpStdLib quality assessment: {}", quality);
-                            return quality;
-                        } else {
-                            logger.debug("ZAZ_FpStdLib quality too low ({}), trying other methods", quality);
-                        }
+                        return quality;
                     } finally {
                         ZAZ_FpStdLib.INSTANCE.ZAZ_FpStdLib_CloseDevice(deviceHandle);
                     }
                 }
             } catch (Exception e) {
                 logger.debug("ZAZ_FpStdLib quality assessment failed: {}", e.getMessage());
+            }
+            
+            // Method 2: Use MOSAIC quality assessment if available
+            try {
+                if (GamcLoad.instance.MOSAIC_IsSupportFingerQuality() == 1) {
+                    int quality = GamcLoad.instance.MOSAIC_FingerQuality(imageData, width, height);
+                    logger.debug("MOSAIC quality assessment: {}", quality);
+                    // MOSAIC returns -1 for bad quality, convert to 0-100 scale
+                    if (quality < 0) {
+                        return 0;
+                    }
+                    return Math.min(100, quality);
+                }
+            } catch (Exception e) {
+                logger.debug("MOSAIC quality assessment failed: {}", e.getMessage());
+            }
+            
+            // Method 3: Try MOSAIC quality assessment on 16-bit data directly
+            try {
+                if (GamcLoad.instance.MOSAIC_IsSupportFingerQuality() == 1) {
+                    // Convert 16-bit data to 8-bit for MOSAIC
+                    byte[] eightBitData = convert16BitTo8Bit(imageData, width, height);
+                    int mosaicQuality = GamcLoad.instance.MOSAIC_FingerQuality(eightBitData, width, height);
+                    logger.debug("MOSAIC quality assessment (8-bit): {}", mosaicQuality);
+                    if (mosaicQuality >= 0) {
+                        return Math.min(100, mosaicQuality);
+                    }
+                }
+            } catch (Exception e) {
+                logger.debug("MOSAIC quality assessment (8-bit) failed: {}", e.getMessage());
             }
             
             // Method 4: Fallback to basic quality assessment
@@ -248,20 +255,23 @@ public class FingerprintDeviceService {
             return 0;
         }
 
-        // Calculate average intensity directly from 8-bit data
+        // Convert 16-bit data to 8-bit for analysis
+        byte[] eightBitData = convert16BitTo8Bit(imageData, width, height);
+        
+        // Calculate average intensity
         long totalIntensity = 0;
-        for (byte b : imageData) {
+        for (byte b : eightBitData) {
             totalIntensity += (b & 0xFF);
         }
-        double avgIntensity = (double) totalIntensity / imageData.length;
+        double avgIntensity = (double) totalIntensity / eightBitData.length;
 
         // Calculate standard deviation
         double variance = 0;
-        for (byte b : imageData) {
+        for (byte b : eightBitData) {
             double diff = (b & 0xFF) - avgIntensity;
             variance += diff * diff;
         }
-        variance /= imageData.length;
+        variance /= eightBitData.length;
         double stdDev = Math.sqrt(variance);
 
         // Quality score based on contrast and brightness
@@ -278,10 +288,10 @@ public class FingerprintDeviceService {
         
         // Check for non-zero pixels (fingerprint presence)
         int nonZeroPixels = 0;
-        for (byte b : imageData) {
+        for (byte b : eightBitData) {
             if ((b & 0xFF) > 0) nonZeroPixels++;
         }
-        double coverage = (double) nonZeroPixels / imageData.length;
+        double coverage = (double) nonZeroPixels / eightBitData.length;
         
         if (coverage > 0.3 && coverage < 0.8) quality += 30;
         else if (coverage > 0.1 && coverage < 0.9) quality += 15;
@@ -289,6 +299,30 @@ public class FingerprintDeviceService {
         return Math.min(100, Math.max(0, quality));
     }
     
+    /**
+     * Convert 16-bit image data to 8-bit by taking the high byte
+     */
+    private byte[] convert16BitTo8Bit(byte[] imageData, int width, int height) {
+        try {
+            int pixelCount = width * height;
+            byte[] eightBitData = new byte[pixelCount];
+            
+            for (int i = 0; i < pixelCount; i++) {
+                int srcIndex = i * 2;
+                if (srcIndex + 1 < imageData.length) {
+                    // Take the high byte (second byte) from 16-bit data
+                    eightBitData[i] = imageData[srcIndex + 1];
+                } else {
+                    eightBitData[i] = 0;
+                }
+            }
+            
+            return eightBitData;
+        } catch (Exception e) {
+            logger.warn("Error converting 16-bit to 8-bit: {}", e.getMessage());
+            return new byte[width * height];
+        }
+    }
     
     /**
      * Get quality message based on quality score (following demo implementations)
@@ -470,7 +504,7 @@ public class FingerprintDeviceService {
                 // Step 5: Continuous capture loop like C# sample (CORRECTED - using 2 bytes per pixel like C# sample)
                 logger.info("Step 5: Starting continuous capture loop with green thumb indicators active");
                 // CORRECTED: C# sample uses w * h * 2 (2 bytes per pixel for 16-bit grayscale)
-                byte[] rawData = new byte[width * height];
+                byte[] rawData = new byte[width * height * 2];
                 
                 long startTime = System.currentTimeMillis();
                 long timeout = 10000; // 10 seconds timeout like C# sample
@@ -773,7 +807,7 @@ public class FingerprintDeviceService {
                 logger.info("Preview thread started for channel: {} (following C# sample pattern)", channel);
                 
                 try {
-                    byte[] data = new byte[width * height]; // 1 byte per pixel for 8-bit grayscale
+                    byte[] data = new byte[width * height * 2]; // CORRECTED: 2 bytes per pixel like C# sample
                     long lastFrameTime = System.currentTimeMillis();
                     int frameCount = 0;
                     
@@ -1040,7 +1074,7 @@ public class FingerprintDeviceService {
             logger.info("Set LED result: {}", ledRet);
             
             // Capture image
-            byte[] rawData = new byte[width * height]; // 1 byte per pixel for 8-bit grayscale
+            byte[] rawData = new byte[width * height * 2]; // 2 bytes per pixel
             int captureRet = ID_FprCapLoad.ID_FprCapinterface.instance.LIVESCAN_GetFPRawData(channel, rawData);
             logger.info("Capture result: {}", captureRet);
             
@@ -1084,7 +1118,7 @@ public class FingerprintDeviceService {
             result.put("split_result", splitRet);
             result.put("fingerprints_found", fpNum);
             result.put("image_size_bytes", rawData.length);
-            result.put("expected_image_size", width * height);
+            result.put("expected_image_size", width * height * 2);
             result.put("note", "Single capture test completed");
             return result;
             
@@ -1271,10 +1305,10 @@ public class FingerprintDeviceService {
                 int quality = assessFingerprintQuality(imageData, width, height);
                 logger.info("Fingerprint image quality: {}", quality);
                 
-                if (quality < 15) {
+                if (quality < 10) {
                     return Map.of(
                         "success", false,
-                        "error_details", "Image quality too low: " + quality + ". Please place finger properly on scanner. Minimum quality required: 15."
+                        "error_details", "Image quality too low: " + quality + ". Please place finger properly on scanner."
                     );
                 }
                 
@@ -1286,20 +1320,15 @@ public class FingerprintDeviceService {
                 // Generate templates based on format
                 if ("ISO".equals(format)) {
                     byte[] isoTemplate = new byte[1024];
-                    logger.info("Creating ISO template with image size: {} bytes, template size: {} bytes", 
-                        standardImageData.length, isoTemplate.length);
                     int isoRet = ZAZ_FpStdLib.INSTANCE.ZAZ_FpStdLib_CreateISOTemplate(deviceHandle, standardImageData, isoTemplate);
-                    logger.info("ISO template creation result: {}", isoRet);
                     if (isoRet > 0) {
                         String isoTemplateBase64 = Base64.getEncoder().encodeToString(isoTemplate);
                         result.put("template_data", isoTemplateBase64);
                         logger.info("ISO template created successfully, return code: {}", isoRet);
                     } else {
-                        logger.error("Failed to create ISO template, return code: {}. Image quality: {}, Image size: {} bytes", 
-                            isoRet, quality, standardImageData.length);
                         return Map.of(
                             "success", false,
-                            "error_details", "Failed to create ISO template, return code: " + isoRet + ". Image quality: " + quality
+                            "error_details", "Failed to create ISO template, return code: " + isoRet
                         );
                     }
                 } else if ("ANSI".equals(format)) {
@@ -1383,7 +1412,7 @@ public class FingerprintDeviceService {
             byte[] standardImage = new byte[standardSize];
             
             // Calculate expected input size (16-bit data: 2 bytes per pixel)
-            int expectedInputSize = width * height;
+            int expectedInputSize = width * height * 2;
             
             logger.debug("Converting image: {}x{} ({} bytes) -> 256x360 ({} bytes)", 
                 width, height, imageData.length, standardSize);
@@ -1607,119 +1636,6 @@ public class FingerprintDeviceService {
             return Map.of(
                 "success", false,
                 "error_details", "Error validating image quality: " + e.getMessage()
-            );
-        }
-    }
-    
-    /**
-     * Test fingerprint template generation with relaxed quality requirements
-     * This method helps debug template generation issues
-     */
-    public Map<String, Object> testFingerprintTemplate(int channel, int width, int height, String format) {
-        try {
-            logger.info("Testing fingerprint template generation for channel: {} with dimensions: {}x{}, format: {}", 
-                channel, width, height, format);
-            
-            // Check platform compatibility
-            if (!isWindows) {
-                logger.error("Platform not supported. This SDK requires Windows.");
-                return Map.of(
-                    "success", false,
-                    "error_details", "Platform not supported. This SDK requires Windows."
-                );
-            }
-            
-            // Initialize ZAZ_FpStdLib device
-            long deviceHandle = ZAZ_FpStdLib.INSTANCE.ZAZ_FpStdLib_OpenDevice();
-            if (deviceHandle == 0) {
-                logger.error("Failed to open ZAZ_FpStdLib device");
-                return Map.of(
-                    "success", false,
-                    "error_details", "Failed to open ZAZ_FpStdLib device"
-                );
-            }
-            
-            try {
-                // Calibrate the device (like Java demo)
-                int calibRet = ZAZ_FpStdLib.INSTANCE.ZAZ_FpStdLib_Calibration(deviceHandle);
-                logger.info("Device calibration result: {}", calibRet);
-                
-                // Capture fingerprint image using the existing capture method
-                Map<String, Object> captureResult = captureFingerprint(channel, width, height);
-                if (!(Boolean) captureResult.get("success")) {
-                    return Map.of(
-                        "success", false,
-                        "error_details", "Failed to capture fingerprint image: " + captureResult.get("error_details")
-                    );
-                }
-                
-                // Get the image data from the capture result
-                String base64Image = (String) captureResult.get("image");
-                byte[] imageData = Base64.getDecoder().decode(base64Image);
-                int quality = (Integer) captureResult.get("quality_score");
-                
-                logger.info("Captured image with quality: {} (relaxed requirements for testing)", quality);
-                
-                // Convert image data to the format expected by ZAZ_FpStdLib (256x360)
-                byte[] standardImageData = convertImageToStandardFormat(imageData, width, height);
-                
-                // Debug: Check if the converted image has reasonable data
-                int nonZeroPixels = 0;
-                for (byte b : standardImageData) {
-                    if ((b & 0xFF) > 0) nonZeroPixels++;
-                }
-                logger.info("Converted image: {} bytes, non-zero pixels: {}, coverage: {:.2f}%", 
-                    standardImageData.length, nonZeroPixels, (nonZeroPixels * 100.0) / standardImageData.length);
-                
-                Map<String, Object> result = new HashMap<>();
-                result.put("success", true);
-                result.put("quality_score", quality);
-                result.put("template_size", 1024); // Standard template size
-                
-                // Generate templates based on format
-                if ("ISO".equals(format)) {
-                    byte[] isoTemplate = new byte[1024];
-                    logger.info("Creating ISO template with image size: {} bytes, template size: {} bytes", 
-                        standardImageData.length, isoTemplate.length);
-                    int isoRet = ZAZ_FpStdLib.INSTANCE.ZAZ_FpStdLib_CreateISOTemplate(deviceHandle, standardImageData, isoTemplate);
-                    logger.info("ISO template creation result: {}", isoRet);
-                    if (isoRet > 0) {
-                        String isoTemplateBase64 = Base64.getEncoder().encodeToString(isoTemplate);
-                        result.put("template_data", isoTemplateBase64);
-                        logger.info("ISO template created successfully, return code: {}", isoRet);
-                    } else {
-                        logger.error("Failed to create ISO template, return code: {}. Image quality: {}, Image size: {} bytes", 
-                            isoRet, quality, standardImageData.length);
-                        return Map.of(
-                            "success", false,
-                            "error_details", "Failed to create ISO template, return code: " + isoRet + ". Image quality: " + quality
-                        );
-                    }
-                } else {
-                    return Map.of(
-                        "success", false,
-                        "error_details", "Invalid template format: " + format + ". Only ISO supported in test mode."
-                    );
-                }
-                
-                return result;
-                
-            } finally {
-                // Close the ZAZ_FpStdLib device
-                ZAZ_FpStdLib.INSTANCE.ZAZ_FpStdLib_CloseDevice(deviceHandle);
-            }
-            
-        } catch (UnsatisfiedLinkError e) {
-            logger.error("Native library cannot be loaded. This is likely because you're running on Linux but the SDK requires Windows DLLs. Error: {}", e.getMessage());
-            return Map.of(
-                "success", false,
-                "error_details", "Native library cannot be loaded. This SDK requires Windows."
-            );
-        } catch (Exception e) {
-            logger.error("Error testing fingerprint template for channel: {}: {}", channel, e.getMessage(), e);
-            return Map.of(
-                "success", false,
-                "error_details", "Error testing fingerprint template: " + e.getMessage()
             );
         }
     }
