@@ -1316,22 +1316,55 @@ public class FingerprintDeviceService {
                     logger.warn("Device calibration failed with return code: {}", calibRet);
                 }
                 
-                // FOLLOWING JAVA DEMO PATTERN: Use ZAZ_FpStdLib_GetImage() directly to get 256x360 image
+                // FOLLOWING JAVA DEMO PATTERN: Use ZAZ_FpStdLib_GetImage() in a loop with timeout
                 int imageSize = 256 * 360; // ZAZ_FpStdLib_GetImage returns 256x360 image
                 byte[] imageData = new byte[imageSize];
                 
-                // Capture image directly from ZAZ device (like Java demo)
-                int imageRet = ZAZ_FpStdLib.INSTANCE.ZAZ_FpStdLib_GetImage(deviceHandle, imageData);
-                if (imageRet != 1) {
-                    return Map.of(
-                        "success", false,
-                        "error_details", "Failed to get image from ZAZ device, return code: " + imageRet
-                    );
+                // Capture image with timeout loop (like Java demo)
+                int timeout = 50; // 50 attempts (like Java demo)
+                int imageRet = 0;
+                int quality = 0;
+                
+                logger.info("Waiting for finger placement on scanner...");
+                
+                while (timeout > 0) {
+                    timeout--;
+                    
+                    // Get image from ZAZ device (like Java demo)
+                    imageRet = ZAZ_FpStdLib.INSTANCE.ZAZ_FpStdLib_GetImage(deviceHandle, imageData);
+                    if (imageRet != 1) {
+                        logger.warn("Failed to get image from ZAZ device, return code: {}", imageRet);
+                        continue;
+                    }
+                    
+                    // Check image quality using ZAZ device (like Java demo)
+                    quality = ZAZ_FpStdLib.INSTANCE.ZAZ_FpStdLib_GetImageQuality(deviceHandle, imageData);
+                    logger.info("Fingerprint image quality (ZAZ): {}", quality);
+                    
+                    if (quality < 10) {
+                        logger.info("Quality too low ({}), waiting for better placement...", quality);
+                        try {
+                            Thread.sleep(100); // Small delay between attempts
+                        } catch (InterruptedException e) {
+                            Thread.currentThread().interrupt();
+                            break;
+                        }
+                        continue;
+                    } else if (quality < 50) {
+                        logger.info("Quality acceptable ({}), proceeding...", quality);
+                        break;
+                    } else {
+                        logger.info("Quality excellent ({}), proceeding...", quality);
+                        break;
+                    }
                 }
                 
-                // Check image quality using ZAZ device (like Java demo)
-                int quality = ZAZ_FpStdLib.INSTANCE.ZAZ_FpStdLib_GetImageQuality(deviceHandle, imageData);
-                logger.info("Fingerprint image quality (ZAZ): {}", quality);
+                if (timeout <= 0) {
+                    return Map.of(
+                        "success", false,
+                        "error_details", "Timeout waiting for finger placement. Please place finger properly on scanner."
+                    );
+                }
                 
                 if (quality < 10) {
                     return Map.of(
