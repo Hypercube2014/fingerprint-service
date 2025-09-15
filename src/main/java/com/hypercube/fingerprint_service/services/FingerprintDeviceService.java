@@ -720,10 +720,13 @@ public class FingerprintDeviceService {
      */
     private Map<String, Object> processSplitThumb(Pointer infosPtr, int position, String thumbName, int splitWidth, int splitHeight) {
         try {
-            // CORRECTED: Use FPSPLIT_INFO constants for correct offset calculation
-            // Extract the thumb data from the pointer
-            Pointer thumbPtr = infosPtr.share(FPSPLIT_INFO.getMemoryOffset(position)); // Correct offset calculation
-            byte[] thumbData = thumbPtr.getByteArray(0, splitWidth * splitHeight);
+            // CORRECTED: Follow C# pattern exactly - first get the pOutBuf pointer, then read from it
+            // Step 1: Calculate offset to the pOutBuf pointer within the structure
+            int pOutBufOffset = position * FPSPLIT_INFO.getStructureSize() + FPSPLIT_INFO.getPOutBufOffset();
+            // Step 2: Read the pointer value (like C# Marshal.ReadIntPtr)
+            Pointer pOutBufPtr = infosPtr.share(pOutBufOffset).getPointer(0);
+            // Step 3: Read the actual data from that pointer (like C# Marshal.Copy)
+            byte[] thumbData = pOutBufPtr.getByteArray(0, splitWidth * splitHeight);
             
             // Store the thumb as a PNG image
             String customName = String.format("%s_position_%d", thumbName, position);

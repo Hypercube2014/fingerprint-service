@@ -16,7 +16,7 @@ import com.sun.jna.Pointer;
  * - int quality (4 bytes)
  * - Pointer pOutBuf (8 bytes on x64)
  * 
- * Total size: 32 bytes on x64 architecture
+ * Total size: 28 bytes on x64 architecture (matching C# Marshal.SizeOf)
  * pOutBuf pointer offset: 24 bytes
  */
 public class FPSPLIT_INFO extends Structure {
@@ -34,7 +34,7 @@ public class FPSPLIT_INFO extends Structure {
      * @return structure size in bytes
      */
     public static int getStructureSize() {
-        return 32; // 32 bytes on x64 architecture
+        return 28; // 28 bytes on x64 architecture (matching C# Marshal.SizeOf)
     }
     
     /**
