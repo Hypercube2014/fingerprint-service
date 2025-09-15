@@ -184,10 +184,44 @@ public class FingerprintDeviceService {
     
     /**
      * Assess fingerprint quality using multiple methods for better accuracy
+     * Prioritizes MOSAIC quality assessment as it's more reliable for this hardware
      */
     private int assessFingerprintQuality(byte[] imageData, int width, int height) {
         try {
-            // Method 1: Try ZAZ_FpStdLib quality assessment (most reliable for templates)
+            // Method 1: Use MOSAIC quality assessment first (most reliable for this hardware)
+            try {
+                if (GamcLoad.instance.MOSAIC_IsSupportFingerQuality() == 1) {
+                    // Convert 16-bit data to 8-bit for MOSAIC
+                    byte[] eightBitData = convert16BitTo8Bit(imageData, width, height);
+                    int mosaicQuality = GamcLoad.instance.MOSAIC_FingerQuality(eightBitData, width, height);
+                    logger.debug("MOSAIC quality assessment (8-bit): {}", mosaicQuality);
+                    if (mosaicQuality >= 0) {
+                        int quality = Math.min(100, mosaicQuality);
+                        logger.debug("Using MOSAIC quality assessment: {}", quality);
+                        return quality;
+                    }
+                }
+            } catch (Exception e) {
+                logger.debug("MOSAIC quality assessment (8-bit) failed: {}", e.getMessage());
+            }
+            
+            // Method 2: Try MOSAIC quality assessment on raw 16-bit data
+            try {
+                if (GamcLoad.instance.MOSAIC_IsSupportFingerQuality() == 1) {
+                    int quality = GamcLoad.instance.MOSAIC_FingerQuality(imageData, width, height);
+                    logger.debug("MOSAIC quality assessment (raw): {}", quality);
+                    // MOSAIC returns -1 for bad quality, convert to 0-100 scale
+                    if (quality >= 0) {
+                        int result = Math.min(100, quality);
+                        logger.debug("Using MOSAIC quality assessment (raw): {}", result);
+                        return result;
+                    }
+                }
+            } catch (Exception e) {
+                logger.debug("MOSAIC quality assessment (raw) failed: {}", e.getMessage());
+            }
+            
+            // Method 3: Try ZAZ_FpStdLib quality assessment (less reliable for this hardware)
             try {
                 long deviceHandle = ZAZ_FpStdLib.INSTANCE.ZAZ_FpStdLib_OpenDevice();
                 if (deviceHandle != 0) {
@@ -196,43 +230,19 @@ public class FingerprintDeviceService {
                         byte[] standardImage = convertImageToStandardFormat(imageData, width, height);
                         int quality = ZAZ_FpStdLib.INSTANCE.ZAZ_FpStdLib_GetImageQuality(deviceHandle, standardImage);
                         logger.debug("ZAZ_FpStdLib quality assessment: {}", quality);
-                        return quality;
+                        // Only use ZAZ quality if it's reasonable (not too low)
+                        if (quality > 10) {
+                            logger.debug("Using ZAZ_FpStdLib quality assessment: {}", quality);
+                            return quality;
+                        } else {
+                            logger.debug("ZAZ_FpStdLib quality too low ({}), trying other methods", quality);
+                        }
                     } finally {
                         ZAZ_FpStdLib.INSTANCE.ZAZ_FpStdLib_CloseDevice(deviceHandle);
                     }
                 }
             } catch (Exception e) {
                 logger.debug("ZAZ_FpStdLib quality assessment failed: {}", e.getMessage());
-            }
-            
-            // Method 2: Use MOSAIC quality assessment if available
-            try {
-                if (GamcLoad.instance.MOSAIC_IsSupportFingerQuality() == 1) {
-                    int quality = GamcLoad.instance.MOSAIC_FingerQuality(imageData, width, height);
-                    logger.debug("MOSAIC quality assessment: {}", quality);
-                    // MOSAIC returns -1 for bad quality, convert to 0-100 scale
-                    if (quality < 0) {
-                        return 0;
-                    }
-                    return Math.min(100, quality);
-                }
-            } catch (Exception e) {
-                logger.debug("MOSAIC quality assessment failed: {}", e.getMessage());
-            }
-            
-            // Method 3: Try MOSAIC quality assessment on 16-bit data directly
-            try {
-                if (GamcLoad.instance.MOSAIC_IsSupportFingerQuality() == 1) {
-                    // Convert 16-bit data to 8-bit for MOSAIC
-                    byte[] eightBitData = convert16BitTo8Bit(imageData, width, height);
-                    int mosaicQuality = GamcLoad.instance.MOSAIC_FingerQuality(eightBitData, width, height);
-                    logger.debug("MOSAIC quality assessment (8-bit): {}", mosaicQuality);
-                    if (mosaicQuality >= 0) {
-                        return Math.min(100, mosaicQuality);
-                    }
-                }
-            } catch (Exception e) {
-                logger.debug("MOSAIC quality assessment (8-bit) failed: {}", e.getMessage());
             }
             
             // Method 4: Fallback to basic quality assessment
@@ -1305,10 +1315,10 @@ public class FingerprintDeviceService {
                 int quality = assessFingerprintQuality(imageData, width, height);
                 logger.info("Fingerprint image quality: {}", quality);
                 
-                if (quality < 20) {
+                if (quality < 15) {
                     return Map.of(
                         "success", false,
-                        "error_details", "Image quality too low: " + quality + ". Please place finger properly on scanner. Minimum quality required: 20."
+                        "error_details", "Image quality too low: " + quality + ". Please place finger properly on scanner. Minimum quality required: 15."
                     );
                 }
                 
@@ -1674,11 +1684,9 @@ public class FingerprintDeviceService {
             }
             
             try {
-                // Calibrate the device
+                // Calibrate the device (like Java demo)
                 int calibRet = ZAZ_FpStdLib.INSTANCE.ZAZ_FpStdLib_Calibration(deviceHandle);
-                if (calibRet != 1) {
-                    logger.warn("Device calibration failed with return code: {}", calibRet);
-                }
+                logger.info("Device calibration result: {}", calibRet);
                 
                 // Capture fingerprint image using the existing capture method
                 Map<String, Object> captureResult = captureFingerprint(channel, width, height);
@@ -1698,6 +1706,14 @@ public class FingerprintDeviceService {
                 
                 // Convert image data to the format expected by ZAZ_FpStdLib (256x360)
                 byte[] standardImageData = convertImageToStandardFormat(imageData, width, height);
+                
+                // Debug: Check if the converted image has reasonable data
+                int nonZeroPixels = 0;
+                for (byte b : standardImageData) {
+                    if ((b & 0xFF) > 0) nonZeroPixels++;
+                }
+                logger.info("Converted image: {} bytes, non-zero pixels: {}, coverage: {:.2f}%", 
+                    standardImageData.length, nonZeroPixels, (nonZeroPixels * 100.0) / standardImageData.length);
                 
                 Map<String, Object> result = new HashMap<>();
                 result.put("success", true);
