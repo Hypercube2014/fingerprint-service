@@ -585,13 +585,25 @@ public class FingerprintDeviceService {
                     
                     // CORRECTED: Use FPSPLIT_INFO structure constants for proper memory allocation (like C# sample)
                     int size = FPSPLIT_INFO.getStructureSize(); // 28 bytes on x64
-                    Pointer infosPtr = new Memory(size * 10); // Space for 10 fingerprints (like C# sample)
+                    int maxFingerprints = 10; // Maximum fingerprints supported by FPSPLIT
+                    // Allocate enough space for structures + pointer fields (8 bytes per structure for pOutBuf)
+                    int totalSize = size * maxFingerprints + 8 * maxFingerprints;
+                    Pointer infosPtr = new Memory(totalSize); // Space for max fingerprints with pointer space
+                    logger.debug("Allocated {} bytes for {} structures of {} bytes each + {} bytes for pointers", totalSize, maxFingerprints, size, 8 * maxFingerprints);
                     
                     // CORRECTED: Use FPSPLIT_INFO constants for correct offset calculation (like C# sample)
                     // Prepare memory for each fingerprint's output buffer (following C# sample pattern exactly)
-                    for (int i = 0; i < 10; i++) { // Allocate for 10 fingerprints like C# sample
+                    for (int i = 0; i < maxFingerprints; i++) { // Allocate for max fingerprints like C# sample
                         // Calculate offset to pOutBuf field within each structure (like C#: i * size + 24)
                         int pOutBufOffset = i * size + FPSPLIT_INFO.getPOutBufOffset();
+                        logger.debug("Structure {}: pOutBufOffset = {} * {} + {} = {}", i, i, size, FPSPLIT_INFO.getPOutBufOffset(), pOutBufOffset);
+                        
+                        // Check bounds - pOutBuf field is 8 bytes, so we need pOutBufOffset + 8 <= totalSize
+                        if (pOutBufOffset + 8 > totalSize) {
+                            logger.error("Offset {} + 8 exceeds allocated memory size {}", pOutBufOffset, totalSize);
+                            throw new RuntimeException("Memory offset calculation error");
+                        }
+                        
                         Pointer ptr = infosPtr.share(pOutBufOffset);
                         Pointer p = new Memory(splitWidth * splitHeight);
                         ptr.setPointer(0, p);
