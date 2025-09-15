@@ -412,6 +412,58 @@ public class FingerprintController {
     }
     
     /**
+     * Split Four Right Fingers - Extract right hand four fingers (index, middle, ring, little) from a single image
+     * This endpoint captures an image containing all four right fingers and automatically splits them
+     * Following C# sample pattern for type 2 (right four fingers)
+     */
+    @PostMapping("/split/four-right")
+    public ResponseEntity<Map<String, Object>> splitFourRightFingers(
+            @RequestParam(defaultValue = "0") int channel,
+            @RequestParam(defaultValue = "1600") int width,
+            @RequestParam(defaultValue = "1500") int height,
+            @RequestParam(defaultValue = "300") int splitWidth,
+            @RequestParam(defaultValue = "400") int splitHeight) {
+        
+        try {
+            // Check platform compatibility first
+            if (!deviceService.isPlatformSupported()) {
+                return ResponseEntity.status(400).body(Map.of(
+                    "success", false,
+                    "message", "Platform not supported. This SDK requires Windows.",
+                    "platform_info", deviceService.getPlatformInfo(),
+                    "timestamp", System.currentTimeMillis()
+                ));
+            }
+            
+            logger.info("Split four right fingers request - Channel: {}, Dimensions: {}x{} -> {}x{}", 
+                channel, width, height, splitWidth, splitHeight);
+            
+            // Call the service method
+            Map<String, Object> result = deviceService.splitFourRightFingers(channel, width, height, splitWidth, splitHeight);
+            
+            // Add platform info to response
+            result.put("platform_info", deviceService.getPlatformInfo());
+            result.put("timestamp", System.currentTimeMillis());
+            
+            if ((Boolean) result.get("success")) {
+                return ResponseEntity.ok(result);
+            } else {
+                return ResponseEntity.status(500).body(result);
+            }
+            
+        } catch (Exception e) {
+            logger.error("Error splitting four right fingers for channel {}: {}", channel, e.getMessage(), e);
+            return ResponseEntity.status(500).body(Map.of(
+                "success", false,
+                "message", "Error splitting four right fingers: " + e.getMessage(),
+                "channel", channel,
+                "platform_info", deviceService.getPlatformInfo(),
+                "timestamp", System.currentTimeMillis()
+            ));
+        }
+    }
+    
+    /**
      * Test single capture and quality check (for debugging split issues)
      */
     @PostMapping("/test/capture-quality")

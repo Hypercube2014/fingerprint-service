@@ -730,6 +730,296 @@ public class FingerprintDeviceService {
     }
     
     /**
+     * Split Four Right Fingers - Extract right hand four fingers (index, middle, ring, little) from a single image
+     * Following C# sample pattern for type 2 (right four fingers)
+     */
+    public Map<String, Object> splitFourRightFingers(int channel, int width, int height, int splitWidth, int splitHeight) {
+        try {
+            logger.info("Splitting four right fingers for channel: {} with dimensions: {}x{} -> {}x{}", channel, width, height, splitWidth, splitHeight);
+            
+            // Step 1: Initialize fingerprint device (following C# sample sequence)
+            logger.info("Step 1: Initializing fingerprint device (following C# sample sequence)");
+            if (!initializeDevice(channel)) {
+                return Map.of(
+                    "success", false,
+                    "error_details", "Failed to initialize fingerprint device"
+                );
+            }
+            logger.info("Device initialized successfully");
+            
+            // Initialize MOSAIC library for quality assessment
+            try {
+                int mosaicRet = GamcLoad.instance.MOSAIC_Init();
+                if (mosaicRet == 1) {
+                    logger.info("MOSAIC library initialized successfully for split operation");
+                } else {
+                    logger.warn("MOSAIC library initialization failed with return code: {}", mosaicRet);
+                }
+            } catch (Exception e) {
+                logger.warn("Error initializing MOSAIC library: {}", e.getMessage());
+            }
+            
+            // Step 2: Set capture window (like C# sample LIVESCAN_SetCaptWindow)
+            logger.info("Step 2: Setting capture window to {}x{}", width, height);
+            int windowRet = ID_FprCapLoad.ID_FprCapinterface.instance.LIVESCAN_SetCaptWindow(0, 0, 0, width, height);
+            if (windowRet != 1) {
+                logger.warn("Failed to set capture window, continuing anyway");
+            }
+            
+            // Step 3: Set LED display for right four fingers mode (this shows green indicators)
+            logger.info("Step 3: Setting LED/LCD display for right four fingers mode (this should show green finger indicators)");
+            int ledRet = 0;
+            try {
+                // Set LED display for right four fingers mode (imageIndex 3 = RIGHT_FOUR_FINGER)
+                ledRet = ID_FprCapLoad.ID_FprCapinterface.instance.LIVESCAN_SetLedLight(3);
+                if (ledRet == 1) {
+                    logger.info("LED display set successfully for right four fingers mode");
+                } else {
+                    logger.warn("LED display failed with return code: {}", ledRet);
+                }
+            } catch (Exception e) {
+                logger.warn("Error setting LED display: {}", e.getMessage());
+            }
+            
+            // Step 4: Play right four fingers selection sound
+            logger.info("Step 4: Playing right four fingers selection sound");
+            try {
+                // Play sound to indicate right four fingers mode is ready (like C# sample)
+                int soundRet = ID_FprCapLoad.ID_FprCapinterface.instance.LIVESCAN_Beep(2); // 2 beeps for four fingers
+                if (soundRet == 1) {
+                    logger.info("Right four fingers selection sound played successfully");
+                } else {
+                    logger.warn("Sound playback failed with return code: {}", soundRet);
+                }
+            } catch (Exception e) {
+                logger.warn("Error playing sound: {}", e.getMessage());
+            }
+            
+            // Step 5: Start continuous capture loop with green finger indicators active
+            logger.info("Step 5: Starting continuous capture loop with green finger indicators active");
+            
+            int expectedFingerprints = 4; // Right four fingers: index, middle, ring, little
+            int timeout = 10000; // 10 seconds timeout
+            int attemptCount = 0;
+            long startTime = System.currentTimeMillis();
+            
+            while (System.currentTimeMillis() - startTime < timeout) {
+                attemptCount++;
+                long elapsed = System.currentTimeMillis() - startTime;
+                
+                logger.info("Attempt #{} (elapsed: {}ms) - Capturing fingerprint image...", attemptCount, elapsed);
+                
+                // Capture fingerprint image
+                byte[] rawData = new byte[width * height];
+                int captureRet = ID_FprCapLoad.ID_FprCapinterface.instance.LIVESCAN_GetFPRawData(channel, rawData);
+                
+                if (captureRet != 1) {
+                    logger.warn("Attempt #{} - Image capture failed with return code: {}, retrying...", attemptCount, captureRet);
+                    try {
+                        Thread.sleep(100); // Small delay before retry
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        break;
+                    }
+                    continue;
+                }
+                
+                logger.info("Attempt #{} - Image captured successfully, checking quality...", attemptCount);
+                
+                // Check image quality
+                int quality = assessFingerprintQuality(rawData, width, height);
+                logger.info("Attempt #{} - Image quality score: {}", attemptCount, quality);
+                
+                if (quality < 15) { // Minimum quality threshold
+                    logger.warn("Attempt #{} - Image quality too low ({}), retrying...", attemptCount, quality);
+                    try {
+                        Thread.sleep(100);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        break;
+                    }
+                    continue;
+                }
+                
+                logger.info("Attempt #{} - Image quality acceptable ({}), attempting split...", attemptCount, quality);
+                
+                // Step 6: Prepare output buffer for split results (following C# sample exactly)
+                logger.debug("Preparing split buffers and performing FPSPLIT_DoSplit (NO FPSPLIT_Init needed)");
+                
+                // CORRECTED: Use FPSPLIT_INFO structure constants for proper memory allocation (like C# sample)
+                int size = FPSPLIT_INFO.getStructureSize(); // 28 bytes on x64
+                int maxFingerprints = 10; // Maximum fingerprints supported by FPSPLIT
+                // Allocate enough space for structures + pointer fields (8 bytes per structure for pOutBuf)
+                int totalSize = size * maxFingerprints + 8 * maxFingerprints;
+                Pointer infosPtr = new Memory(totalSize); // Space for max fingerprints with pointer space
+                logger.debug("Allocated {} bytes for {} structures of {} bytes each + {} bytes for pointers", totalSize, maxFingerprints, size, 8 * maxFingerprints);
+                
+                // CORRECTED: Use FPSPLIT_INFO constants for correct offset calculation (like C# sample)
+                // Prepare memory for each fingerprint's output buffer (following C# sample pattern exactly)
+                for (int i = 0; i < maxFingerprints; i++) { // Allocate for max fingerprints like C# sample
+                    // Calculate offset to pOutBuf field within each structure (like C#: i * size + 24)
+                    int pOutBufOffset = i * size + FPSPLIT_INFO.getPOutBufOffset();
+                    logger.debug("Structure {}: pOutBufOffset = {} * {} + {} = {}", i, i, size, FPSPLIT_INFO.getPOutBufOffset(), pOutBufOffset);
+                    
+                    // Check bounds - pOutBuf field is 8 bytes, so we need pOutBufOffset + 8 <= totalSize
+                    if (pOutBufOffset + 8 > totalSize) {
+                        logger.error("Offset {} + 8 exceeds allocated memory size {}", pOutBufOffset, totalSize);
+                        throw new RuntimeException("Memory offset calculation error");
+                    }
+                    
+                    Pointer ptr = infosPtr.share(pOutBufOffset);
+                    Pointer p = new Memory(splitWidth * splitHeight);
+                    ptr.setPointer(0, p);
+                }
+                
+                // Perform the splitting (CORRECTED - using IntByReference like C# ref int)
+                logger.info("Attempt #{} - Calling FPSPLIT_DoSplit with image size: {}x{}, split size: {}x{}", attemptCount, width, height, splitWidth, splitHeight);
+                IntByReference fpNumRef = new IntByReference(0);
+                int ret = FpSplitLoad.instance.FPSPLIT_DoSplit(
+                    rawData, width, height, 1, splitWidth, splitHeight, fpNumRef, infosPtr
+                );
+                
+                int fpNum = fpNumRef.getValue(); // Get the actual number of fingerprints found
+                logger.info("Attempt #{} - FPSPLIT_DoSplit returned: {}, fingerprints found: {}", attemptCount, ret, fpNum);
+                
+                // CORRECTED: FPSPLIT_DoSplit returns 0 for success (not 1), following C# sample pattern
+                if (ret != 0) {
+                    logger.warn("Attempt #{} - FPSPLIT_DoSplit failed with return code: {}, retrying...", attemptCount, ret);
+                    try {
+                        Thread.sleep(100); // Small delay before retry
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        break;
+                    }
+                    continue;
+                }
+                
+                // Check if we found exactly 4 right fingers (like C# sample checks for fingernum)
+                if (fpNum == expectedFingerprints) {
+                    logger.info("Attempt #{} - SUCCESS! FPSPLIT splitting completed successfully. Found exactly {} right fingers as expected. Processing results...", attemptCount, fpNum);
+                    
+                    // Step 7: Process the split results and store individual finger images
+                    List<Map<String, Object>> fingers = new ArrayList<>();
+                    
+                    // Process each finger (right hand: index, middle, ring, little)
+                    String[] fingerNames = {"right_index", "right_middle", "right_ring", "right_little"};
+                    for (int i = 0; i < fpNum; i++) {
+                        Map<String, Object> finger = processSplitFinger(infosPtr, i, fingerNames[i], splitWidth, splitHeight);
+                        if (finger != null) {
+                            fingers.add(finger);
+                        }
+                    }
+                    
+                    // Step 8: Play success sound and set success LED
+                    logger.info("Step 8: Playing success sound and setting success LED");
+                    try {
+                        // Play success sound (like C# sample)
+                        ID_FprCapLoad.ID_FprCapinterface.instance.LIVESCAN_Beep(1); // 1 beep for success
+                        logger.info("Success sound played successfully");
+                        
+                        // Set success LED (imageIndex 17 = RIGHT_FOUR_FINGER_SUCCESS)
+                        ID_FprCapLoad.ID_FprCapinterface.instance.LIVESCAN_SetLedLight(17);
+                        logger.info("Success LED set successfully");
+                    } catch (Exception e) {
+                        logger.warn("Error playing success sound or setting LED: {}", e.getMessage());
+                    }
+                    
+                    logger.info("Successfully split {} right fingers for channel: {}", fingers.size(), channel);
+                    
+                    Map<String, Object> successResponse = new HashMap<>();
+                    successResponse.put("success", true);
+                    successResponse.put("split_type", "four_right_fingers");
+                    successResponse.put("finger_count", fingers.size());
+                    successResponse.put("fingers", fingers);
+                    successResponse.put("split_width", splitWidth);
+                    successResponse.put("split_height", splitHeight);
+                    successResponse.put("original_width", width);
+                    successResponse.put("original_height", height);
+                    successResponse.put("channel", channel);
+                    successResponse.put("captured_at", new Date());
+                    successResponse.put("note", "Following C# sample sequence: Device Init -> Set Window -> Set LED -> Sound -> Capture -> Split -> Success Sound/LED. NO FPSPLIT_Init required!");
+                    
+                    return successResponse;
+                    
+                } else {
+                    logger.warn("Attempt #{} - Found {} fingers, expected {}. Retrying...", attemptCount, fpNum, expectedFingerprints);
+                    try {
+                        Thread.sleep(100);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        break;
+                    }
+                }
+            }
+            
+            // Timeout reached
+            logger.error("Timeout reached after {} attempts in {}ms while trying to split four right fingers. Please ensure all four right fingers are clearly visible on the scanner.", attemptCount, timeout);
+            return Map.of(
+                "success", false,
+                "error_details", "Timeout reached after " + attemptCount + " attempts in " + timeout + "ms while trying to split four right fingers. Please ensure all four right fingers are clearly visible on the scanner.",
+                "timeout_ms", timeout,
+                "attempts_made", attemptCount,
+                "expected_fingerprints", expectedFingerprints
+            );
+            
+        } catch (UnsatisfiedLinkError e) {
+            logger.error("Native library cannot be loaded. This SDK requires Windows. Error: {}", e.getMessage());
+            return Map.of(
+                "success", false,
+                "error_details", "Native library cannot be loaded. This SDK requires Windows."
+            );
+        } catch (Exception e) {
+            logger.error("Error splitting four right fingers for channel: {}: {}", channel, e.getMessage(), e);
+            return Map.of(
+                "success", false,
+                "error_details", "Error splitting four right fingers: " + e.getMessage()
+            );
+        }
+    }
+    
+    /**
+     * Process a split finger result and store it as an image
+     */
+    private Map<String, Object> processSplitFinger(Pointer infosPtr, int position, String fingerName, int splitWidth, int splitHeight) {
+        try {
+            // CORRECTED: Follow C# pattern exactly - first get the pOutBuf pointer, then read from it
+            // Step 1: Calculate offset to the pOutBuf pointer within the structure
+            int pOutBufOffset = position * FPSPLIT_INFO.getStructureSize() + FPSPLIT_INFO.getPOutBufOffset();
+            // Step 2: Read the pointer value (like C# Marshal.ReadIntPtr)
+            Pointer pOutBufPtr = infosPtr.share(pOutBufOffset).getPointer(0);
+            // Step 3: Read the actual data from that pointer (like C# Marshal.Copy)
+            byte[] fingerData = pOutBufPtr.getByteArray(0, splitWidth * splitHeight);
+            
+            // Store the finger as a PNG image
+            String customName = String.format("%s_position_%d", fingerName, position);
+            FingerprintFileStorageService.FileStorageResult storageResult = 
+                fileStorageService.storeFingerprintImageAsImageOrganized(fingerData, "split", customName, splitWidth, splitHeight);
+            
+            if (storageResult.isSuccess()) {
+                Map<String, Object> finger = new HashMap<>();
+                finger.put("finger_name", fingerName);
+                finger.put("position", position);
+                finger.put("width", splitWidth);
+                finger.put("height", splitHeight);
+                finger.put("filename", storageResult.getFilename());
+                finger.put("file_path", storageResult.getFilePath());
+                finger.put("file_size", storageResult.getFileSize());
+                finger.put("image", Base64.getEncoder().encodeToString(fingerData));
+                
+                logger.info("Successfully processed and stored {} at position {}", fingerName, position);
+                return finger;
+            } else {
+                logger.warn("Failed to store finger {}: {}", fingerName, storageResult.getMessage());
+                return null;
+            }
+            
+        } catch (Exception e) {
+            logger.error("Error processing finger {}: {}", fingerName, e.getMessage());
+            return null;
+        }
+    }
+
+    /**
      * Process a split thumb result and store it as an image
      */
     private Map<String, Object> processSplitThumb(Pointer infosPtr, int position, String thumbName, int splitWidth, int splitHeight) {

@@ -28,6 +28,7 @@ A Spring Boot service for capturing and processing fingerprint images using the 
 
 ### Fingerprint Splitting
 - `POST /api/fingerprint/split/thumbs?channel=0&width=1600&height=1500&splitWidth=300&splitHeight=400` - Split two thumb fingerprints (left and right) from a single image
+- `POST /api/fingerprint/split/four-right?channel=0&width=1600&height=1500&splitWidth=300&splitHeight=400` - Split four right hand fingers (index, middle, ring, little) from a single image
 
 ### Testing and Diagnostics
 - `GET /api/fingerprint/test/fpsplit` - Test FPSPLIT library initialization with different dimensions
@@ -118,6 +119,15 @@ curl -X POST "http://localhost:8080/api/fingerprint/split/thumbs?channel=0&width
 
 # Split thumbs with custom split dimensions
 curl -X POST "http://localhost:8080/api/fingerprint/split/thumbs?channel=0&width=1600&height=1500&splitWidth=400&splitHeight=500"
+```
+
+### 9. Split Four Right Fingers
+```bash
+# Split four right fingers with default dimensions (300x400)
+curl -X POST "http://localhost:8080/api/fingerprint/split/four-right?channel=0&width=1600&height=1500"
+
+# Split four right fingers with custom split dimensions
+curl -X POST "http://localhost:8080/api/fingerprint/split/four-right?channel=0&width=1600&height=1500&splitWidth=400&splitHeight=500"
 ```
 
 ## Response Format
@@ -299,6 +309,121 @@ This service provides the foundation for fingerprint capture and storage. Future
 ### What Are Split Fingerprints?
 
 Fingerprint splitting is the process of taking a single captured fingerprint image and extracting multiple individual fingerprints from it. This is useful when you capture a hand with multiple fingers and want to process each finger separately.
+
+### Split Two Thumbs Explained
+
+The **`/split/thumbs`** endpoint is designed to efficiently capture and process both thumb fingerprints:
+
+#### **How It Works:**
+1. **Single Capture**: Captures one image that contains both left and right thumb fingerprints
+2. **Automatic Detection**: Uses the FPSPLIT library to automatically detect thumb regions in the image
+3. **Smart Splitting**: Separates the image into two individual thumb images
+4. **Individual Storage**: Saves each thumb as a separate PNG file in the organized storage structure
+
+#### **Use Case:**
+- **Efficient Capture**: Instead of capturing thumbs separately, capture both at once
+- **Automatic Separation**: The system automatically detects and splits them
+- **Individual Processing**: Each thumb can then be processed separately for verification or storage
+
+#### **Output:**
+- **Left Thumb**: Saved as `left_thumb_position_0_split_...png`
+- **Right Thumb**: Saved as `right_thumb_position_1_split_...png`
+- **Metadata**: Position, dimensions, quality, and storage information for each thumb
+
+#### **Parameters:**
+- `channel`: Device channel (default: 0)
+- `width`: Original image width (default: 1600)
+- `height`: Original image height (default: 1500)
+- `splitWidth`: Width of split thumb images (default: 300)
+- `splitHeight`: Height of split thumb images (default: 400)
+
+### Split Four Right Fingers Explained
+
+The **`/split/four-right`** endpoint is designed to efficiently capture and process all four right hand fingers:
+
+#### **How It Works:**
+1. **Single Capture**: Captures one image that contains all four right hand fingers (index, middle, ring, little)
+2. **Automatic Detection**: Uses the FPSPLIT library to automatically detect finger regions in the image
+3. **Smart Splitting**: Separates the image into four individual finger images
+4. **Individual Storage**: Saves each finger as a separate PNG file in the organized storage structure
+
+#### **Use Case:**
+- **Efficient Capture**: Instead of capturing fingers separately, capture all four at once
+- **Automatic Separation**: The system automatically detects and splits them
+- **Individual Processing**: Each finger can then be processed separately for verification or storage
+
+#### **Output:**
+- **Right Index**: Saved as `right_index_position_0_split_...png`
+- **Right Middle**: Saved as `right_middle_position_1_split_...png`
+- **Right Ring**: Saved as `right_ring_position_2_split_...png`
+- **Right Little**: Saved as `right_little_position_3_split_...png`
+- **Metadata**: Position, dimensions, quality, and storage information for each finger
+
+#### **Parameters:**
+- `channel`: Device channel (default: 0)
+- `width`: Original image width (default: 1600)
+- `height`: Original image height (default: 1500)
+- `splitWidth`: Width of split finger images (default: 300)
+- `splitHeight`: Height of split finger images (default: 400)
+
+#### **Response Format:**
+```json
+{
+  "success": true,
+  "split_type": "four_right_fingers",
+  "finger_count": 4,
+  "fingers": [
+    {
+      "finger_name": "right_index",
+      "position": 0,
+      "width": 300,
+      "height": 400,
+      "filename": "right_index_position_0_split_20250915_162116_f01c69af_1757942476036.png",
+      "file_path": ".\\fingerprints\\split\\2025\\09\\15\\right_index_position_0_split_20250915_162116_f01c69af_1757942476036.png",
+      "file_size": 120000,
+      "image": "base64_encoded_image_data"
+    },
+    {
+      "finger_name": "right_middle",
+      "position": 1,
+      "width": 300,
+      "height": 400,
+      "filename": "right_middle_position_1_split_20250915_162116_f01c69af_1757942476036.png",
+      "file_path": ".\\fingerprints\\split\\2025\\09\\15\\right_middle_position_1_split_20250915_162116_f01c69af_1757942476036.png",
+      "file_size": 120000,
+      "image": "base64_encoded_image_data"
+    },
+    {
+      "finger_name": "right_ring",
+      "position": 2,
+      "width": 300,
+      "height": 400,
+      "filename": "right_ring_position_2_split_20250915_162116_f01c69af_1757942476036.png",
+      "file_path": ".\\fingerprints\\split\\2025\\09\\15\\right_ring_position_2_split_20250915_162116_f01c69af_1757942476036.png",
+      "file_size": 120000,
+      "image": "base64_encoded_image_data"
+    },
+    {
+      "finger_name": "right_little",
+      "position": 3,
+      "width": 300,
+      "height": 400,
+      "filename": "right_little_position_3_split_20250915_162116_f01c69af_1757942476036.png",
+      "file_path": ".\\fingerprints\\split\\2025\\09\\15\\right_little_position_3_split_20250915_162116_f01c69af_1757942476036.png",
+      "file_size": 120000,
+      "image": "base64_encoded_image_data"
+    }
+  ],
+  "split_width": 300,
+  "split_height": 400,
+  "original_width": 1600,
+  "original_height": 1500,
+  "channel": 0,
+  "captured_at": "2025-09-15T16:21:16.144+00:00",
+  "platform_info": "OS: Windows 11, Architecture: amd64, Supported: true",
+  "timestamp": 1757942476144
+}
+```
 
 ### Split Two Thumbs Explained
 
