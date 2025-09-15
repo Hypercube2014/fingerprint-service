@@ -1480,9 +1480,10 @@ public class FingerprintDeviceService {
                     logger.warn("Device calibration failed with return code: {}", calibRet);
                 }
 
-                // FIXED: Use ZAZ_FpStdLib_GetImage directly (like working demo)
-                // ZAZ_FpStdLib expects 256x360 = 92160 bytes (8-bit grayscale)
-                int IMAGE_SIZE = 256 * 360;
+                // Updated to match actual device output dimensions (928x928)
+                int IMAGE_WIDTH = 928;
+                int IMAGE_HEIGHT = 928;
+                int IMAGE_SIZE = IMAGE_WIDTH * IMAGE_HEIGHT;
                 byte[] imageData = new byte[IMAGE_SIZE];
                 
                 // FIXED: Capture image using ZAZ_FpStdLib_GetImage (like working demo)
@@ -1512,7 +1513,7 @@ public class FingerprintDeviceService {
                 result.put("quality_score", quality);
                 result.put("template_size", 1024); // Standard template size
                 result.put("image_size", IMAGE_SIZE);
-                result.put("image_dimensions", "256x360");
+                result.put("image_dimensions", IMAGE_WIDTH + "x" + IMAGE_HEIGHT);
 
                 // Generate templates based on format (like working demo)
                 if ("ISO".equals(format)) {
