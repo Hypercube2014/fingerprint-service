@@ -75,6 +75,9 @@ public class FingerprintWebSocketHandler implements WebSocketHandler {
                 case "capture_template":
                     handleCaptureTemplate(session, sessionId, messageData);
                     break;
+                case "split_four_right":
+                    handleSplitFourRight(session, sessionId, messageData);
+                    break;
                 case "get_status":
                     handleGetStatus(session, sessionId);
                     break;
@@ -239,6 +242,48 @@ public class FingerprintWebSocketHandler implements WebSocketHandler {
         } catch (Exception e) {
             logger.error("Error capturing template for session {}: {}", sessionId, e.getMessage(), e);
             sendError(session, "Error capturing template: " + e.getMessage());
+        }
+    }
+
+    private void handleSplitFourRight(WebSocketSession session, String sessionId, Map<String, Object> messageData) {
+        try {
+            int channel = getIntValue(messageData, "channel", 0);
+            int width = getIntValue(messageData, "width", 1600);
+            int height = getIntValue(messageData, "height", 1500);
+            int splitWidth = getIntValue(messageData, "splitWidth", 300);
+            int splitHeight = getIntValue(messageData, "splitHeight", 400);
+
+            logger.info("Splitting four right fingers for session {}: channel={}, dimensions={}x{}, split={}x{}",
+                    sessionId, channel, width, height, splitWidth, splitHeight);
+
+            // Split four right fingers
+            Map<String, Object> splitResult = deviceService.splitFourRightFingers(channel, width, height, splitWidth, splitHeight);
+
+            if (splitResult != null && Boolean.TRUE.equals(splitResult.get("success"))) {
+                Map<String, Object> responseData = new HashMap<>();
+                responseData.put("success", true);
+                responseData.put("split_type", splitResult.get("split_type"));
+                responseData.put("finger_count", splitResult.get("finger_count"));
+                responseData.put("fingers", splitResult.get("fingers"));
+                responseData.put("split_width", splitResult.get("split_width"));
+                responseData.put("split_height", splitResult.get("split_height"));
+                responseData.put("original_width", splitResult.get("original_width"));
+                responseData.put("original_height", splitResult.get("original_height"));
+                responseData.put("channel", channel);
+                responseData.put("captured_at", splitResult.get("captured_at"));
+
+                sendMessage(session, createMessage("split_result", responseData));
+            } else {
+                String errorMsg = "Split four right fingers failed";
+                if (splitResult != null && splitResult.get("error_details") != null) {
+                    errorMsg += ": " + splitResult.get("error_details");
+                }
+                sendError(session, errorMsg);
+            }
+
+        } catch (Exception e) {
+            logger.error("Error splitting four right fingers for session {}: {}", sessionId, e.getMessage(), e);
+            sendError(session, "Error splitting four right fingers: " + e.getMessage());
         }
     }
 

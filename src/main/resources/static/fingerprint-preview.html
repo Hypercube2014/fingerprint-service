@@ -325,6 +325,7 @@
                 <button id="captureISOBtn" class="btn" disabled>Capture ISO Template</button>
                 <button id="captureANSIBtn" class="btn" disabled>Capture ANSI Template</button>
                 <button id="captureBothBtn" class="btn" disabled>Capture Both Templates</button>
+                <button id="splitFourRightBtn" class="btn" disabled>Split Four Right Fingers</button>
             </div>
         </div>
 
@@ -346,6 +347,16 @@
             <div class="control-group">
                 <label for="heightInput">Height:</label>
                 <input type="number" id="heightInput" value="1500" min="100" max="2000">
+            </div>
+
+            <div class="control-group">
+                <label for="splitWidthInput">Split Width:</label>
+                <input type="number" id="splitWidthInput" value="300" min="100" max="500">
+            </div>
+
+            <div class="control-group">
+                <label for="splitHeightInput">Split Height:</label>
+                <input type="number" id="splitHeightInput" value="400" min="100" max="600">
             </div>
 
             <div class="control-group">
@@ -382,6 +393,18 @@
                 </div>
                 <div style="margin-top: 10px;">
                     <button id="downloadTemplateBtn" class="btn" disabled style="width: 100%; font-size: 11px;">Download Template</button>
+                </div>
+            </div>
+
+            <div class="split-section" style="margin-top: 15px; padding: 15px; background: #f5f5dc; border: 1px solid #d0d0d0;">
+                <h4 style="margin: 0 0 10px 0; color: #2c3e50;">Split Results</h4>
+                <div id="splitInfo" style="font-size: 12px; color: #666;">
+                    <div>Finger Count: <span id="splitFingerCount">0</span></div>
+                    <div>Split Size: <span id="splitSize">300x400</span></div>
+                    <div>Status: <span id="splitStatus">Ready</span></div>
+                </div>
+                <div style="margin-top: 10px;">
+                    <button id="downloadSplitBtn" class="btn" disabled style="width: 100%; font-size: 11px;">Download Split Images</button>
                 </div>
             </div>
         </div>
@@ -424,10 +447,14 @@
             this.captureISOBtn = document.getElementById('captureISOBtn');
             this.captureANSIBtn = document.getElementById('captureANSIBtn');
             this.captureBothBtn = document.getElementById('captureBothBtn');
+            this.splitFourRightBtn = document.getElementById('splitFourRightBtn');
             this.downloadTemplateBtn = document.getElementById('downloadTemplateBtn');
+            this.downloadSplitBtn = document.getElementById('downloadSplitBtn');
             this.channelSelect = document.getElementById('channelSelect');
             this.widthInput = document.getElementById('widthInput');
             this.heightInput = document.getElementById('heightInput');
+            this.splitWidthInput = document.getElementById('splitWidthInput');
+            this.splitHeightInput = document.getElementById('splitHeightInput');
             this.templateFormatSelect = document.getElementById('templateFormatSelect');
             this.connectionStatus = document.getElementById('connectionStatus');
             this.previewStatus = document.getElementById('previewStatus');
@@ -440,10 +467,14 @@
             this.templateSize = document.getElementById('templateSize');
             this.templateQuality = document.getElementById('templateQuality');
             this.templateStatus = document.getElementById('templateStatus');
+            this.splitFingerCount = document.getElementById('splitFingerCount');
+            this.splitSize = document.getElementById('splitSize');
+            this.splitStatus = document.getElementById('splitStatus');
             this.logContainer = document.getElementById('logContainer');
 
-            // Store current template data
+            // Store current template and split data
             this.currentTemplate = null;
+            this.currentSplitResult = null;
         }
 
         setupEventListeners() {
@@ -453,7 +484,9 @@
             this.captureISOBtn.addEventListener('click', () => this.captureTemplate('ISO'));
             this.captureANSIBtn.addEventListener('click', () => this.captureTemplate('ANSI'));
             this.captureBothBtn.addEventListener('click', () => this.captureTemplate('BOTH'));
+            this.splitFourRightBtn.addEventListener('click', () => this.splitFourRightFingers());
             this.downloadTemplateBtn.addEventListener('click', () => this.downloadTemplate());
+            this.downloadSplitBtn.addEventListener('click', () => this.downloadSplitImages());
         }
 
         connectWebSocket() {
@@ -508,6 +541,7 @@
                     this.captureISOBtn.disabled = false;
                     this.captureANSIBtn.disabled = false;
                     this.captureBothBtn.disabled = false;
+                    this.splitFourRightBtn.disabled = false;
                     break;
 
                 case 'preview_stopped':
@@ -519,6 +553,7 @@
                     this.captureISOBtn.disabled = true;
                     this.captureANSIBtn.disabled = true;
                     this.captureBothBtn.disabled = true;
+                    this.splitFourRightBtn.disabled = true;
                     break;
 
                 case 'preview':
@@ -532,6 +567,10 @@
 
                 case 'template_result':
                     this.handleTemplateResult(data);
+                    break;
+
+                case 'split_result':
+                    this.handleSplitResult(data);
                     break;
 
                 case 'status':
@@ -725,6 +764,27 @@
             this.sendMessage(message);
         }
 
+        splitFourRightFingers() {
+            if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+                this.log('WebSocket not connected', 'error');
+                return;
+            }
+
+            this.splitStatus.textContent = 'Splitting...';
+            this.log('Splitting four right fingers...', 'info');
+
+            const message = {
+                command: 'split_four_right',
+                channel: parseInt(this.channelSelect.value),
+                width: parseInt(this.widthInput.value),
+                height: parseInt(this.heightInput.value),
+                splitWidth: parseInt(this.splitWidthInput.value),
+                splitHeight: parseInt(this.splitHeightInput.value)
+            };
+
+            this.sendMessage(message);
+        }
+
         handleTemplateResult(data) {
             if (data.success) {
                 this.currentTemplate = data;
@@ -739,6 +799,22 @@
                 this.templateStatus.textContent = 'Failed';
                 this.downloadTemplateBtn.disabled = true;
                 this.log(`Template capture failed: ${data.error_details || data.message}`, 'error');
+            }
+        }
+
+        handleSplitResult(data) {
+            if (data.success) {
+                this.currentSplitResult = data;
+                this.splitFingerCount.textContent = data.finger_count || 0;
+                this.splitSize.textContent = `${data.split_width || 300}x${data.split_height || 400}`;
+                this.splitStatus.textContent = 'Split Complete';
+                this.downloadSplitBtn.disabled = false;
+
+                this.log(`Split completed successfully: ${data.finger_count} fingers found`, 'success');
+            } else {
+                this.splitStatus.textContent = 'Split Failed';
+                this.downloadSplitBtn.disabled = true;
+                this.log(`Split failed: ${data.error_details || data.message}`, 'error');
             }
         }
 
@@ -791,6 +867,25 @@
             document.body.removeChild(link);
 
             URL.revokeObjectURL(url);
+        }
+
+        downloadSplitImages() {
+            if (!this.currentSplitResult || !this.currentSplitResult.fingers) {
+                this.log('No split images to download', 'warning');
+                return;
+            }
+
+            const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+            const fingers = this.currentSplitResult.fingers;
+
+            fingers.forEach((finger, index) => {
+                if (finger.image_data) {
+                    const filename = `finger_${finger.finger_name || `right_${index + 1}`}_${timestamp}.png`;
+                    this.downloadImage(finger.image_data, filename);
+                }
+            });
+
+            this.log(`Downloaded ${fingers.length} split finger images`, 'success');
         }
 
         sendMessage(message) {
