@@ -477,6 +477,84 @@ public class FingerprintController {
     }
     
     /**
+     * Test template generation with relaxed quality requirements
+     * This endpoint helps test template generation even with lower quality scores
+     */
+    @PostMapping("/template/test-iso")
+    public ResponseEntity<Map<String, Object>> testISOTemplate(
+            @RequestParam(defaultValue = "0") int channel,
+            @RequestParam(defaultValue = "1600") int width,
+            @RequestParam(defaultValue = "1500") int height) {
+        
+        try {
+            // Check platform compatibility first
+            if (!deviceService.isPlatformSupported()) {
+                return ResponseEntity.status(400).body(Map.of(
+                    "success", false,
+                    "message", "Platform not supported. This SDK requires Windows.",
+                    "platform_info", deviceService.getPlatformInfo(),
+                    "timestamp", System.currentTimeMillis()
+                ));
+            }
+            
+            // Check if device is initialized
+            if (!deviceService.isDeviceInitialized(channel)) {
+                logger.info("Device not initialized for channel {}, attempting to initialize", channel);
+                boolean initSuccess = deviceService.initializeDevice(channel);
+                if (!initSuccess) {
+                    return ResponseEntity.status(500).body(Map.of(
+                        "success", false,
+                        "message", "Device not initialized and initialization failed",
+                        "channel", channel,
+                        "platform_info", deviceService.getPlatformInfo(),
+                        "timestamp", System.currentTimeMillis()
+                    ));
+                }
+            }
+            
+            // Test template generation with relaxed quality requirements
+            Map<String, Object> templateResult = deviceService.testFingerprintTemplate(channel, width, height, "ISO");
+            
+            if ((Boolean) templateResult.get("success")) {
+                Map<String, Object> response = new HashMap<>();
+                response.put("success", true);
+                response.put("message", "Fingerprint ISO template created successfully (test mode)");
+                response.put("template_format", "ISO");
+                response.put("template_size", templateResult.get("template_size"));
+                response.put("template_data", templateResult.get("template_data"));
+                response.put("quality_score", templateResult.get("quality_score"));
+                response.put("width", width);
+                response.put("height", height);
+                response.put("channel", channel);
+                response.put("captured_at", new Date());
+                response.put("platform_info", deviceService.getPlatformInfo());
+                response.put("timestamp", System.currentTimeMillis());
+                
+                return ResponseEntity.ok(response);
+            } else {
+                return ResponseEntity.status(500).body(Map.of(
+                    "success", false,
+                    "message", "Failed to create fingerprint template (test mode)",
+                    "error_details", templateResult.get("error_details"),
+                    "channel", channel,
+                    "platform_info", deviceService.getPlatformInfo(),
+                    "timestamp", System.currentTimeMillis()
+                ));
+            }
+            
+        } catch (Exception e) {
+            logger.error("Error testing ISO template for channel {}: {}", channel, e.getMessage(), e);
+            return ResponseEntity.status(500).body(Map.of(
+                "success", false,
+                "message", "Error testing ISO template: " + e.getMessage(),
+                "channel", channel,
+                "platform_info", deviceService.getPlatformInfo(),
+                "timestamp", System.currentTimeMillis()
+            ));
+        }
+    }
+    
+    /**
      * Validate image quality without capturing
      * This endpoint helps debug quality issues by testing the quality assessment methods
      */

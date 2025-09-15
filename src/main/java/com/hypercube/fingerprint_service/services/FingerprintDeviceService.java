@@ -1305,10 +1305,10 @@ public class FingerprintDeviceService {
                 int quality = assessFingerprintQuality(imageData, width, height);
                 logger.info("Fingerprint image quality: {}", quality);
                 
-                if (quality < 10) {
+                if (quality < 20) {
                     return Map.of(
                         "success", false,
-                        "error_details", "Image quality too low: " + quality + ". Please place finger properly on scanner."
+                        "error_details", "Image quality too low: " + quality + ". Please place finger properly on scanner. Minimum quality required: 20."
                     );
                 }
                 
@@ -1320,15 +1320,20 @@ public class FingerprintDeviceService {
                 // Generate templates based on format
                 if ("ISO".equals(format)) {
                     byte[] isoTemplate = new byte[1024];
+                    logger.info("Creating ISO template with image size: {} bytes, template size: {} bytes", 
+                        standardImageData.length, isoTemplate.length);
                     int isoRet = ZAZ_FpStdLib.INSTANCE.ZAZ_FpStdLib_CreateISOTemplate(deviceHandle, standardImageData, isoTemplate);
+                    logger.info("ISO template creation result: {}", isoRet);
                     if (isoRet > 0) {
                         String isoTemplateBase64 = Base64.getEncoder().encodeToString(isoTemplate);
                         result.put("template_data", isoTemplateBase64);
                         logger.info("ISO template created successfully, return code: {}", isoRet);
                     } else {
+                        logger.error("Failed to create ISO template, return code: {}. Image quality: {}, Image size: {} bytes", 
+                            isoRet, quality, standardImageData.length);
                         return Map.of(
                             "success", false,
-                            "error_details", "Failed to create ISO template, return code: " + isoRet
+                            "error_details", "Failed to create ISO template, return code: " + isoRet + ". Image quality: " + quality
                         );
                     }
                 } else if ("ANSI".equals(format)) {
@@ -1636,6 +1641,113 @@ public class FingerprintDeviceService {
             return Map.of(
                 "success", false,
                 "error_details", "Error validating image quality: " + e.getMessage()
+            );
+        }
+    }
+    
+    /**
+     * Test fingerprint template generation with relaxed quality requirements
+     * This method helps debug template generation issues
+     */
+    public Map<String, Object> testFingerprintTemplate(int channel, int width, int height, String format) {
+        try {
+            logger.info("Testing fingerprint template generation for channel: {} with dimensions: {}x{}, format: {}", 
+                channel, width, height, format);
+            
+            // Check platform compatibility
+            if (!isWindows) {
+                logger.error("Platform not supported. This SDK requires Windows.");
+                return Map.of(
+                    "success", false,
+                    "error_details", "Platform not supported. This SDK requires Windows."
+                );
+            }
+            
+            // Initialize ZAZ_FpStdLib device
+            long deviceHandle = ZAZ_FpStdLib.INSTANCE.ZAZ_FpStdLib_OpenDevice();
+            if (deviceHandle == 0) {
+                logger.error("Failed to open ZAZ_FpStdLib device");
+                return Map.of(
+                    "success", false,
+                    "error_details", "Failed to open ZAZ_FpStdLib device"
+                );
+            }
+            
+            try {
+                // Calibrate the device
+                int calibRet = ZAZ_FpStdLib.INSTANCE.ZAZ_FpStdLib_Calibration(deviceHandle);
+                if (calibRet != 1) {
+                    logger.warn("Device calibration failed with return code: {}", calibRet);
+                }
+                
+                // Capture fingerprint image using the existing capture method
+                Map<String, Object> captureResult = captureFingerprint(channel, width, height);
+                if (!(Boolean) captureResult.get("success")) {
+                    return Map.of(
+                        "success", false,
+                        "error_details", "Failed to capture fingerprint image: " + captureResult.get("error_details")
+                    );
+                }
+                
+                // Get the image data from the capture result
+                String base64Image = (String) captureResult.get("image");
+                byte[] imageData = Base64.getDecoder().decode(base64Image);
+                int quality = (Integer) captureResult.get("quality_score");
+                
+                logger.info("Captured image with quality: {} (relaxed requirements for testing)", quality);
+                
+                // Convert image data to the format expected by ZAZ_FpStdLib (256x360)
+                byte[] standardImageData = convertImageToStandardFormat(imageData, width, height);
+                
+                Map<String, Object> result = new HashMap<>();
+                result.put("success", true);
+                result.put("quality_score", quality);
+                result.put("template_size", 1024); // Standard template size
+                
+                // Generate templates based on format
+                if ("ISO".equals(format)) {
+                    byte[] isoTemplate = new byte[1024];
+                    logger.info("Creating ISO template with image size: {} bytes, template size: {} bytes", 
+                        standardImageData.length, isoTemplate.length);
+                    int isoRet = ZAZ_FpStdLib.INSTANCE.ZAZ_FpStdLib_CreateISOTemplate(deviceHandle, standardImageData, isoTemplate);
+                    logger.info("ISO template creation result: {}", isoRet);
+                    if (isoRet > 0) {
+                        String isoTemplateBase64 = Base64.getEncoder().encodeToString(isoTemplate);
+                        result.put("template_data", isoTemplateBase64);
+                        logger.info("ISO template created successfully, return code: {}", isoRet);
+                    } else {
+                        logger.error("Failed to create ISO template, return code: {}. Image quality: {}, Image size: {} bytes", 
+                            isoRet, quality, standardImageData.length);
+                        return Map.of(
+                            "success", false,
+                            "error_details", "Failed to create ISO template, return code: " + isoRet + ". Image quality: " + quality
+                        );
+                    }
+                } else {
+                    return Map.of(
+                        "success", false,
+                        "error_details", "Invalid template format: " + format + ". Only ISO supported in test mode."
+                    );
+                }
+                
+                return result;
+                
+            } finally {
+                // Close the ZAZ_FpStdLib device
+                ZAZ_FpStdLib.INSTANCE.ZAZ_FpStdLib_CloseDevice(deviceHandle);
+            }
+            
+        } catch (UnsatisfiedLinkError e) {
+            logger.error("Native library cannot be loaded. This is likely because you're running on Linux but the SDK requires Windows DLLs. Error: {}", e.getMessage());
+            return Map.of(
+                "success", false,
+                "error_details", "Native library cannot be loaded. This SDK requires Windows."
+            );
+        } catch (Exception e) {
+            logger.error("Error testing fingerprint template for channel: {}: {}", channel, e.getMessage(), e);
+            return Map.of(
+                "success", false,
+                "error_details", "Error testing fingerprint template: " + e.getMessage()
             );
         }
     }
