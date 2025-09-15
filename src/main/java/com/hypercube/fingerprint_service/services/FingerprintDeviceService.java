@@ -17,6 +17,10 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.ArrayList;
 import java.util.Date;
 import java.util.List;
+import java.util.UUID;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
+import java.time.Instant;
 import com.sun.jna.Pointer;
 import com.sun.jna.Memory;
 import com.sun.jna.ptr.IntByReference;
@@ -92,9 +96,116 @@ public class FingerprintDeviceService {
     }
     
     /**
-     * Capture fingerprint image
+     * Capture fingerprint image using ZAZ_FpStdLib (following demo implementations)
+     * This method uses ZAZ_FpStdLib_GetImage() directly like the working demos
      */
     public Map<String, Object> captureFingerprint(int channel, int width, int height) {
+        return captureFingerprintZaz(channel, width, height);
+    }
+    
+    /**
+     * Capture fingerprint image using ZAZ_FpStdLib directly (like demos)
+     * This is the working approach used in all demo implementations
+     */
+    public Map<String, Object> captureFingerprintZaz(int channel, int width, int height) {
+        try {
+            logger.info("Capturing fingerprint using ZAZ device for channel: {} with dimensions: {}x{}", 
+                channel, width, height);
+            
+            // Check platform compatibility
+            if (!isWindows) {
+                logger.error("Platform not supported. This SDK requires Windows.");
+                return Map.of(
+                    "success", false,
+                    "error_details", "Platform not supported. This SDK requires Windows."
+                );
+            }
+            
+            // Initialize ZAZ_FpStdLib device
+            long deviceHandle = ZAZ_FpStdLib.INSTANCE.ZAZ_FpStdLib_OpenDevice();
+            if (deviceHandle == 0) {
+                logger.error("Failed to open ZAZ_FpStdLib device");
+                return Map.of(
+                    "success", false,
+                    "error_details", "Failed to open ZAZ_FpStdLib device"
+                );
+            }
+            
+            try {
+                // Calibrate the device
+                int calibRet = ZAZ_FpStdLib.INSTANCE.ZAZ_FpStdLib_Calibration(deviceHandle);
+                if (calibRet != 1) {
+                    logger.warn("Device calibration failed with return code: {}", calibRet);
+                }
+                
+                // FOLLOWING DEMO PATTERN: Use ZAZ_FpStdLib_GetImage() directly
+                // This gets 256x360 8-bit image directly from ZAZ device (like demos)
+                byte[] imageData = new byte[256 * 360]; // 8-bit image like demos
+                int imageRet = ZAZ_FpStdLib.INSTANCE.ZAZ_FpStdLib_GetImage(deviceHandle, imageData);
+                
+                if (imageRet != 1) {
+                    return Map.of(
+                        "success", false,
+                        "error_details", "Failed to get image from ZAZ device, return code: " + imageRet
+                    );
+                }
+                
+                // Check image quality using ZAZ device (like demos)
+                int quality = ZAZ_FpStdLib.INSTANCE.ZAZ_FpStdLib_GetImageQuality(deviceHandle, imageData);
+                logger.info("Fingerprint image quality (ZAZ): {}", quality);
+                
+                // Store the image
+                String filename = String.format("channel_%d_256x360_zaz_%s_%s.png", 
+                    channel, 
+                    LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss")),
+                    UUID.randomUUID().toString().substring(0, 8));
+                
+                String filePath = fileStorageService.storeFingerprintImageAsImageOrganized(imageData, "zaz", filename, 256, 360).getFilePath();
+                
+                // Convert to base64 for response
+                String base64Image = Base64.getEncoder().encodeToString(imageData);
+                
+                Map<String, Object> result = new HashMap<>();
+                result.put("success", true);
+                result.put("image", base64Image);
+                result.put("quality_score", quality);
+                result.put("quality_message", getQualityMessage(quality));
+                result.put("width", 256);
+                result.put("height", 360);
+                result.put("channel", channel);
+                result.put("captured_at", Instant.now().toString());
+                result.put("storage_info", Map.of(
+                    "stored", true,
+                    "filename", filename,
+                    "file_path", filePath,
+                    "file_size", imageData.length
+                ));
+                result.put("message", "Fingerprint captured successfully using ZAZ device");
+                result.put("timestamp", System.currentTimeMillis());
+                
+                logger.info("Fingerprint captured and stored as image successfully for channel: {} with quality: {}. File: {}", 
+                    channel, quality, filePath);
+                
+                return result;
+                
+            } finally {
+                ZAZ_FpStdLib.INSTANCE.ZAZ_FpStdLib_CloseDevice(deviceHandle);
+            }
+            
+        } catch (Exception e) {
+            logger.error("Error capturing fingerprint using ZAZ device: {}", e.getMessage(), e);
+            return Map.of(
+                "success", false,
+                "error_details", "Error capturing fingerprint: " + e.getMessage()
+            );
+        }
+    }
+    
+    /**
+     * Capture fingerprint image using LIVESCAN (original approach)
+     * This method is kept for backward compatibility but may have quality issues
+     */
+    public Map<String, Object> captureFingerprintLivescan(int channel, int width, int height) {
         try {
             logger.info("Capturing fingerprint for channel: {} with dimensions: {}x{}", channel, width, height);
             
@@ -321,6 +432,39 @@ public class FingerprintDeviceService {
         } catch (Exception e) {
             logger.warn("Error converting 16-bit to 8-bit: {}", e.getMessage());
             return new byte[width * height];
+        }
+    }
+    
+    /**
+     * Resize image data from one dimension to another
+     */
+    private byte[] resizeImage(byte[] imageData, int srcWidth, int srcHeight, int dstWidth, int dstHeight) {
+        try {
+            byte[] resizedData = new byte[dstWidth * dstHeight];
+            
+            for (int y = 0; y < dstHeight; y++) {
+                for (int x = 0; x < dstWidth; x++) {
+                    // Calculate source coordinates
+                    int srcX = (x * srcWidth) / dstWidth;
+                    int srcY = (y * srcHeight) / dstHeight;
+                    
+                    // Calculate source index
+                    int srcIndex = srcY * srcWidth + srcX;
+                    
+                    // Calculate destination index
+                    int dstIndex = y * dstWidth + x;
+                    
+                    // Copy pixel data
+                    if (srcIndex < imageData.length && dstIndex < resizedData.length) {
+                        resizedData[dstIndex] = imageData[srcIndex];
+                    }
+                }
+            }
+            
+            return resizedData;
+        } catch (Exception e) {
+            logger.warn("Error resizing image: {}", e.getMessage());
+            return new byte[dstWidth * dstHeight];
         }
     }
     
@@ -1249,8 +1393,8 @@ public class FingerprintDeviceService {
     }
     
     /**
-     * Capture fingerprint template using ZAZ_FpStdLib
-     * This method captures a fingerprint image and generates templates in the specified format
+     * Capture fingerprint template using ZAZ_FpStdLib (following demo implementations)
+     * This method uses ZAZ_FpStdLib_GetImage() directly like the working demos
      */
     public Map<String, Object> captureFingerprintTemplate(int channel, int width, int height, String format) {
         try {
@@ -1283,27 +1427,21 @@ public class FingerprintDeviceService {
                     logger.warn("Device calibration failed with return code: {}", calibRet);
                 }
                 
-                // Capture fingerprint image using the existing capture method
-                Map<String, Object> captureResult = captureFingerprint(channel, width, height);
-                if (!(Boolean) captureResult.get("success")) {
+                // FOLLOWING DEMO PATTERN: Use ZAZ_FpStdLib_GetImage() directly
+                // This gets 256x360 8-bit image directly from ZAZ device (like demos)
+                byte[] imageData = new byte[256 * 360]; // 8-bit image like demos
+                int imageRet = ZAZ_FpStdLib.INSTANCE.ZAZ_FpStdLib_GetImage(deviceHandle, imageData);
+                
+                if (imageRet != 1) {
                     return Map.of(
                         "success", false,
-                        "error_details", "Failed to capture fingerprint image: " + captureResult.get("error_details")
+                        "error_details", "Failed to get image from ZAZ device, return code: " + imageRet
                     );
                 }
                 
-                // Get the image data from the capture result
-                String base64Image = (String) captureResult.get("image");
-                byte[] imageData = Base64.getDecoder().decode(base64Image);
-                
-                // Convert image data to the format expected by ZAZ_FpStdLib (256x360)
-                // The ZAZ_FpStdLib expects 256x360 byte array, but we have width*height*2
-                // We need to resize/convert the image data
-                byte[] standardImageData = convertImageToStandardFormat(imageData, width, height);
-                
-                // Check image quality using the improved quality assessment
-                int quality = assessFingerprintQuality(imageData, width, height);
-                logger.info("Fingerprint image quality: {}", quality);
+                // Check image quality using ZAZ device (like demos)
+                int quality = ZAZ_FpStdLib.INSTANCE.ZAZ_FpStdLib_GetImageQuality(deviceHandle, imageData);
+                logger.info("Fingerprint image quality (ZAZ): {}", quality);
                 
                 if (quality < 10) {
                     return Map.of(
@@ -1317,10 +1455,11 @@ public class FingerprintDeviceService {
                 result.put("quality_score", quality);
                 result.put("template_size", 1024); // Standard template size
                 
-                // Generate templates based on format
+                // Generate templates based on format (using direct 256x360 image like demos)
                 if ("ISO".equals(format)) {
                     byte[] isoTemplate = new byte[1024];
-                    int isoRet = ZAZ_FpStdLib.INSTANCE.ZAZ_FpStdLib_CreateISOTemplate(deviceHandle, standardImageData, isoTemplate);
+                    int isoRet = ZAZ_FpStdLib.INSTANCE.ZAZ_FpStdLib_CreateISOTemplate(deviceHandle, imageData, isoTemplate);
+                    
                     if (isoRet > 0) {
                         String isoTemplateBase64 = Base64.getEncoder().encodeToString(isoTemplate);
                         result.put("template_data", isoTemplateBase64);
@@ -1333,7 +1472,7 @@ public class FingerprintDeviceService {
                     }
                 } else if ("ANSI".equals(format)) {
                     byte[] ansiTemplate = new byte[1024];
-                    int ansiRet = ZAZ_FpStdLib.INSTANCE.ZAZ_FpStdLib_CreateANSITemplate(deviceHandle, standardImageData, ansiTemplate);
+                    int ansiRet = ZAZ_FpStdLib.INSTANCE.ZAZ_FpStdLib_CreateANSITemplate(deviceHandle, imageData, ansiTemplate);
                     if (ansiRet > 0) {
                         String ansiTemplateBase64 = Base64.getEncoder().encodeToString(ansiTemplate);
                         result.put("template_data", ansiTemplateBase64);
@@ -1349,8 +1488,8 @@ public class FingerprintDeviceService {
                     byte[] isoTemplate = new byte[1024];
                     byte[] ansiTemplate = new byte[1024];
                     
-                    int isoRet = ZAZ_FpStdLib.INSTANCE.ZAZ_FpStdLib_CreateISOTemplate(deviceHandle, standardImageData, isoTemplate);
-                    int ansiRet = ZAZ_FpStdLib.INSTANCE.ZAZ_FpStdLib_CreateANSITemplate(deviceHandle, standardImageData, ansiTemplate);
+                    int isoRet = ZAZ_FpStdLib.INSTANCE.ZAZ_FpStdLib_CreateISOTemplate(deviceHandle, imageData, isoTemplate);
+                    int ansiRet = ZAZ_FpStdLib.INSTANCE.ZAZ_FpStdLib_CreateANSITemplate(deviceHandle, imageData, ansiTemplate);
                     
                     if (isoRet > 0 && ansiRet > 0) {
                         String isoTemplateBase64 = Base64.getEncoder().encodeToString(isoTemplate);
@@ -1522,6 +1661,69 @@ public class FingerprintDeviceService {
             return Map.of(
                 "success", false,
                 "error_details", "Error comparing fingerprint templates: " + e.getMessage()
+            );
+        }
+    }
+    
+    /**
+     * Test ZAZ_FpStdLib device functionality
+     * This method helps debug ZAZ_FpStdLib issues
+     */
+    public Map<String, Object> testZazDevice() {
+        try {
+            logger.info("Testing ZAZ_FpStdLib device functionality...");
+            
+            // Check platform compatibility
+            if (!isWindows) {
+                return Map.of(
+                    "success", false,
+                    "error_details", "Platform not supported. This SDK requires Windows."
+                );
+            }
+            
+            Map<String, Object> results = new HashMap<>();
+            results.put("success", true);
+            results.put("timestamp", System.currentTimeMillis());
+            
+            // Test 1: Open device
+            try {
+                long deviceHandle = ZAZ_FpStdLib.INSTANCE.ZAZ_FpStdLib_OpenDevice();
+                results.put("device_open", deviceHandle != 0 ? "SUCCESS" : "FAILED");
+                results.put("device_handle", deviceHandle);
+                
+                if (deviceHandle != 0) {
+                    try {
+                        // Test 2: Calibration
+                        int calibRet = ZAZ_FpStdLib.INSTANCE.ZAZ_FpStdLib_Calibration(deviceHandle);
+                        results.put("calibration", calibRet == 1 ? "SUCCESS" : "FAILED (" + calibRet + ")");
+                        
+                        // Test 3: Create test image (all zeros)
+                        byte[] testImage = new byte[256 * 360];
+                        int qualityRet = ZAZ_FpStdLib.INSTANCE.ZAZ_FpStdLib_GetImageQuality(deviceHandle, testImage);
+                        results.put("quality_test", "SUCCESS (quality: " + qualityRet + ")");
+                        
+                        // Test 4: Try template creation with test image
+                        byte[] testTemplate = new byte[1024];
+                        int isoRet = ZAZ_FpStdLib.INSTANCE.ZAZ_FpStdLib_CreateISOTemplate(deviceHandle, testImage, testTemplate);
+                        results.put("template_test", isoRet > 0 ? "SUCCESS (" + isoRet + ")" : "FAILED (" + isoRet + ")");
+                        
+                    } finally {
+                        // Close device
+                        ZAZ_FpStdLib.INSTANCE.ZAZ_FpStdLib_CloseDevice(deviceHandle);
+                        results.put("device_closed", "SUCCESS");
+                    }
+                }
+            } catch (Exception e) {
+                results.put("device_test_error", e.getMessage());
+            }
+            
+            return results;
+            
+        } catch (Exception e) {
+            logger.error("Error testing ZAZ device: {}", e.getMessage(), e);
+            return Map.of(
+                "success", false,
+                "error_details", "Error testing ZAZ device: " + e.getMessage()
             );
         }
     }

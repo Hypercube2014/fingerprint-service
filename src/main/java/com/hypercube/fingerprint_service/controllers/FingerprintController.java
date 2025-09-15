@@ -477,6 +477,38 @@ public class FingerprintController {
     }
     
     /**
+     * Test ZAZ_FpStdLib device functionality
+     * This endpoint helps debug ZAZ_FpStdLib issues
+     */
+    @PostMapping("/test/zaz-device")
+    public ResponseEntity<Map<String, Object>> testZazDevice() {
+        try {
+            // Check platform compatibility first
+            if (!deviceService.isPlatformSupported()) {
+                return ResponseEntity.status(400).body(Map.of(
+                    "success", false,
+                    "message", "Platform not supported. This SDK requires Windows.",
+                    "platform_info", deviceService.getPlatformInfo(),
+                    "timestamp", System.currentTimeMillis()
+                ));
+            }
+            
+            // Test ZAZ_FpStdLib device
+            Map<String, Object> testResult = deviceService.testZazDevice();
+            return ResponseEntity.ok(testResult);
+            
+        } catch (Exception e) {
+            logger.error("Error testing ZAZ device: {}", e.getMessage(), e);
+            return ResponseEntity.status(500).body(Map.of(
+                "success", false,
+                "message", "Error testing ZAZ device: " + e.getMessage(),
+                "platform_info", deviceService.getPlatformInfo(),
+                "timestamp", System.currentTimeMillis()
+            ));
+        }
+    }
+    
+    /**
      * Validate image quality without capturing
      * This endpoint helps debug quality issues by testing the quality assessment methods
      */
