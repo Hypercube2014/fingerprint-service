@@ -117,8 +117,8 @@ public class FingerprintDeviceService {
                 );
             }
             
-            // Get fingerprint data (CORRECTED - using 2 bytes per pixel like C# sample)
-            byte[] rawData = new byte[width * height * 2]; // 2 bytes per pixel for 16-bit grayscale
+            // Get fingerprint data (using 1 byte per pixel for 8-bit grayscale like working implementations)
+            byte[] rawData = new byte[width * height]; // 1 byte per pixel for 8-bit grayscale
             ret = ID_FprCapLoad.ID_FprCapinterface.instance.LIVESCAN_GetFPRawData(channel, rawData);
             
             if (ret != 1) {
@@ -188,13 +188,12 @@ public class FingerprintDeviceService {
      */
     private int assessFingerprintQuality(byte[] imageData, int width, int height) {
         try {
-            // Method 1: Use MOSAIC quality assessment first (most reliable for this hardware)
+            // Use MOSAIC quality assessment (most reliable for this hardware)
             try {
                 if (GamcLoad.instance.MOSAIC_IsSupportFingerQuality() == 1) {
-                    // Convert 16-bit data to 8-bit for MOSAIC
-                    byte[] eightBitData = convert16BitTo8Bit(imageData, width, height);
-                    int mosaicQuality = GamcLoad.instance.MOSAIC_FingerQuality(eightBitData, width, height);
-                    logger.debug("MOSAIC quality assessment (8-bit): {}", mosaicQuality);
+                    // Use data directly as 8-bit grayscale (like working implementations)
+                    int mosaicQuality = GamcLoad.instance.MOSAIC_FingerQuality(imageData, width, height);
+                    logger.debug("MOSAIC quality assessment: {}", mosaicQuality);
                     if (mosaicQuality >= 0) {
                         int quality = Math.min(100, mosaicQuality);
                         logger.debug("Using MOSAIC quality assessment: {}", quality);
@@ -202,23 +201,7 @@ public class FingerprintDeviceService {
                     }
                 }
             } catch (Exception e) {
-                logger.debug("MOSAIC quality assessment (8-bit) failed: {}", e.getMessage());
-            }
-            
-            // Method 2: Try MOSAIC quality assessment on raw 16-bit data
-            try {
-                if (GamcLoad.instance.MOSAIC_IsSupportFingerQuality() == 1) {
-                    int quality = GamcLoad.instance.MOSAIC_FingerQuality(imageData, width, height);
-                    logger.debug("MOSAIC quality assessment (raw): {}", quality);
-                    // MOSAIC returns -1 for bad quality, convert to 0-100 scale
-                    if (quality >= 0) {
-                        int result = Math.min(100, quality);
-                        logger.debug("Using MOSAIC quality assessment (raw): {}", result);
-                        return result;
-                    }
-                }
-            } catch (Exception e) {
-                logger.debug("MOSAIC quality assessment (raw) failed: {}", e.getMessage());
+                logger.debug("MOSAIC quality assessment failed: {}", e.getMessage());
             }
             
             // Method 3: Try ZAZ_FpStdLib quality assessment (less reliable for this hardware)
@@ -265,23 +248,20 @@ public class FingerprintDeviceService {
             return 0;
         }
 
-        // Convert 16-bit data to 8-bit for analysis
-        byte[] eightBitData = convert16BitTo8Bit(imageData, width, height);
-        
-        // Calculate average intensity
+        // Calculate average intensity directly from 8-bit data
         long totalIntensity = 0;
-        for (byte b : eightBitData) {
+        for (byte b : imageData) {
             totalIntensity += (b & 0xFF);
         }
-        double avgIntensity = (double) totalIntensity / eightBitData.length;
+        double avgIntensity = (double) totalIntensity / imageData.length;
 
         // Calculate standard deviation
         double variance = 0;
-        for (byte b : eightBitData) {
+        for (byte b : imageData) {
             double diff = (b & 0xFF) - avgIntensity;
             variance += diff * diff;
         }
-        variance /= eightBitData.length;
+        variance /= imageData.length;
         double stdDev = Math.sqrt(variance);
 
         // Quality score based on contrast and brightness
@@ -298,10 +278,10 @@ public class FingerprintDeviceService {
         
         // Check for non-zero pixels (fingerprint presence)
         int nonZeroPixels = 0;
-        for (byte b : eightBitData) {
+        for (byte b : imageData) {
             if ((b & 0xFF) > 0) nonZeroPixels++;
         }
-        double coverage = (double) nonZeroPixels / eightBitData.length;
+        double coverage = (double) nonZeroPixels / imageData.length;
         
         if (coverage > 0.3 && coverage < 0.8) quality += 30;
         else if (coverage > 0.1 && coverage < 0.9) quality += 15;
@@ -309,30 +289,6 @@ public class FingerprintDeviceService {
         return Math.min(100, Math.max(0, quality));
     }
     
-    /**
-     * Convert 16-bit image data to 8-bit by taking the high byte
-     */
-    private byte[] convert16BitTo8Bit(byte[] imageData, int width, int height) {
-        try {
-            int pixelCount = width * height;
-            byte[] eightBitData = new byte[pixelCount];
-            
-            for (int i = 0; i < pixelCount; i++) {
-                int srcIndex = i * 2;
-                if (srcIndex + 1 < imageData.length) {
-                    // Take the high byte (second byte) from 16-bit data
-                    eightBitData[i] = imageData[srcIndex + 1];
-                } else {
-                    eightBitData[i] = 0;
-                }
-            }
-            
-            return eightBitData;
-        } catch (Exception e) {
-            logger.warn("Error converting 16-bit to 8-bit: {}", e.getMessage());
-            return new byte[width * height];
-        }
-    }
     
     /**
      * Get quality message based on quality score (following demo implementations)
@@ -514,7 +470,7 @@ public class FingerprintDeviceService {
                 // Step 5: Continuous capture loop like C# sample (CORRECTED - using 2 bytes per pixel like C# sample)
                 logger.info("Step 5: Starting continuous capture loop with green thumb indicators active");
                 // CORRECTED: C# sample uses w * h * 2 (2 bytes per pixel for 16-bit grayscale)
-                byte[] rawData = new byte[width * height * 2];
+                byte[] rawData = new byte[width * height];
                 
                 long startTime = System.currentTimeMillis();
                 long timeout = 10000; // 10 seconds timeout like C# sample
@@ -817,7 +773,7 @@ public class FingerprintDeviceService {
                 logger.info("Preview thread started for channel: {} (following C# sample pattern)", channel);
                 
                 try {
-                    byte[] data = new byte[width * height * 2]; // CORRECTED: 2 bytes per pixel like C# sample
+                    byte[] data = new byte[width * height]; // 1 byte per pixel for 8-bit grayscale
                     long lastFrameTime = System.currentTimeMillis();
                     int frameCount = 0;
                     
@@ -1084,7 +1040,7 @@ public class FingerprintDeviceService {
             logger.info("Set LED result: {}", ledRet);
             
             // Capture image
-            byte[] rawData = new byte[width * height * 2]; // 2 bytes per pixel
+            byte[] rawData = new byte[width * height]; // 1 byte per pixel for 8-bit grayscale
             int captureRet = ID_FprCapLoad.ID_FprCapinterface.instance.LIVESCAN_GetFPRawData(channel, rawData);
             logger.info("Capture result: {}", captureRet);
             
@@ -1128,7 +1084,7 @@ public class FingerprintDeviceService {
             result.put("split_result", splitRet);
             result.put("fingerprints_found", fpNum);
             result.put("image_size_bytes", rawData.length);
-            result.put("expected_image_size", width * height * 2);
+            result.put("expected_image_size", width * height);
             result.put("note", "Single capture test completed");
             return result;
             
@@ -1427,7 +1383,7 @@ public class FingerprintDeviceService {
             byte[] standardImage = new byte[standardSize];
             
             // Calculate expected input size (16-bit data: 2 bytes per pixel)
-            int expectedInputSize = width * height * 2;
+            int expectedInputSize = width * height;
             
             logger.debug("Converting image: {}x{} ({} bytes) -> 256x360 ({} bytes)", 
                 width, height, imageData.length, standardSize);
