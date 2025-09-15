@@ -325,6 +325,7 @@
                 <button id="captureISOBtn" class="btn" disabled>Capture ISO Template</button>
                 <button id="captureANSIBtn" class="btn" disabled>Capture ANSI Template</button>
                 <button id="captureBothBtn" class="btn" disabled>Capture Both Templates</button>
+                <button id="splitTwoThumbsBtn" class="btn" disabled>Split Two Thumbs</button>
                 <button id="splitFourRightBtn" class="btn" disabled>Split Four Right Fingers</button>
             </div>
         </div>
@@ -396,8 +397,20 @@
                 </div>
             </div>
 
+            <div class="split-thumbs-section" style="margin-top: 15px; padding: 15px; background: #f5f5dc; border: 1px solid #d0d0d0;">
+                <h4 style="margin: 0 0 10px 0; color: #2c3e50;">Two Thumbs Split Results</h4>
+                <div id="splitThumbsInfo" style="font-size: 12px; color: #666;">
+                    <div>Thumb Count: <span id="splitThumbCount">0</span></div>
+                    <div>Split Size: <span id="splitThumbSize">300x400</span></div>
+                    <div>Status: <span id="splitThumbStatus">Ready</span></div>
+                </div>
+                <div style="margin-top: 10px;">
+                    <button id="downloadSplitThumbsBtn" class="btn" disabled style="width: 100%; font-size: 11px;">Download Thumb Images</button>
+                </div>
+            </div>
+
             <div class="split-section" style="margin-top: 15px; padding: 15px; background: #f5f5dc; border: 1px solid #d0d0d0;">
-                <h4 style="margin: 0 0 10px 0; color: #2c3e50;">Split Results</h4>
+                <h4 style="margin: 0 0 10px 0; color: #2c3e50;">Four Right Fingers Split Results</h4>
                 <div id="splitInfo" style="font-size: 12px; color: #666;">
                     <div>Finger Count: <span id="splitFingerCount">0</span></div>
                     <div>Split Size: <span id="splitSize">300x400</span></div>
@@ -447,8 +460,10 @@
             this.captureISOBtn = document.getElementById('captureISOBtn');
             this.captureANSIBtn = document.getElementById('captureANSIBtn');
             this.captureBothBtn = document.getElementById('captureBothBtn');
+            this.splitTwoThumbsBtn = document.getElementById('splitTwoThumbsBtn');
             this.splitFourRightBtn = document.getElementById('splitFourRightBtn');
             this.downloadTemplateBtn = document.getElementById('downloadTemplateBtn');
+            this.downloadSplitThumbsBtn = document.getElementById('downloadSplitThumbsBtn');
             this.downloadSplitBtn = document.getElementById('downloadSplitBtn');
             this.channelSelect = document.getElementById('channelSelect');
             this.widthInput = document.getElementById('widthInput');
@@ -467,6 +482,9 @@
             this.templateSize = document.getElementById('templateSize');
             this.templateQuality = document.getElementById('templateQuality');
             this.templateStatus = document.getElementById('templateStatus');
+            this.splitThumbCount = document.getElementById('splitThumbCount');
+            this.splitThumbSize = document.getElementById('splitThumbSize');
+            this.splitThumbStatus = document.getElementById('splitThumbStatus');
             this.splitFingerCount = document.getElementById('splitFingerCount');
             this.splitSize = document.getElementById('splitSize');
             this.splitStatus = document.getElementById('splitStatus');
@@ -474,6 +492,7 @@
 
             // Store current template and split data
             this.currentTemplate = null;
+            this.currentSplitThumbsResult = null;
             this.currentSplitResult = null;
         }
 
@@ -484,8 +503,10 @@
             this.captureISOBtn.addEventListener('click', () => this.captureTemplate('ISO'));
             this.captureANSIBtn.addEventListener('click', () => this.captureTemplate('ANSI'));
             this.captureBothBtn.addEventListener('click', () => this.captureTemplate('BOTH'));
+            this.splitTwoThumbsBtn.addEventListener('click', () => this.splitTwoThumbs());
             this.splitFourRightBtn.addEventListener('click', () => this.splitFourRightFingers());
             this.downloadTemplateBtn.addEventListener('click', () => this.downloadTemplate());
+            this.downloadSplitThumbsBtn.addEventListener('click', () => this.downloadSplitThumbs());
             this.downloadSplitBtn.addEventListener('click', () => this.downloadSplitImages());
         }
 
@@ -541,6 +562,7 @@
                     this.captureISOBtn.disabled = false;
                     this.captureANSIBtn.disabled = false;
                     this.captureBothBtn.disabled = false;
+                    this.splitTwoThumbsBtn.disabled = false;
                     this.splitFourRightBtn.disabled = false;
                     break;
 
@@ -553,6 +575,7 @@
                     this.captureISOBtn.disabled = true;
                     this.captureANSIBtn.disabled = true;
                     this.captureBothBtn.disabled = true;
+                    this.splitTwoThumbsBtn.disabled = true;
                     this.splitFourRightBtn.disabled = true;
                     break;
 
@@ -567,6 +590,10 @@
 
                 case 'template_result':
                     this.handleTemplateResult(data);
+                    break;
+
+                case 'split_thumbs_result':
+                    this.handleSplitThumbsResult(data);
                     break;
 
                 case 'split_result':
@@ -785,6 +812,27 @@
             this.sendMessage(message);
         }
 
+        splitTwoThumbs() {
+            if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+                this.log('WebSocket not connected', 'error');
+                return;
+            }
+
+            this.splitThumbStatus.textContent = 'Splitting...';
+            this.log('Splitting two thumbs...', 'info');
+
+            const message = {
+                command: 'split_two_thumbs',
+                channel: parseInt(this.channelSelect.value),
+                width: parseInt(this.widthInput.value),
+                height: parseInt(this.heightInput.value),
+                splitWidth: parseInt(this.splitWidthInput.value),
+                splitHeight: parseInt(this.splitHeightInput.value)
+            };
+
+            this.sendMessage(message);
+        }
+
         handleTemplateResult(data) {
             if (data.success) {
                 this.currentTemplate = data;
@@ -815,6 +863,22 @@
                 this.splitStatus.textContent = 'Split Failed';
                 this.downloadSplitBtn.disabled = true;
                 this.log(`Split failed: ${data.error_details || data.message}`, 'error');
+            }
+        }
+
+        handleSplitThumbsResult(data) {
+            if (data.success) {
+                this.currentSplitThumbsResult = data;
+                this.splitThumbCount.textContent = data.thumb_count || 0;
+                this.splitThumbSize.textContent = `${data.split_width || 300}x${data.split_height || 400}`;
+                this.splitThumbStatus.textContent = 'Split Complete';
+                this.downloadSplitThumbsBtn.disabled = false;
+
+                this.log(`Thumbs split completed successfully: ${data.thumb_count} thumbs found`, 'success');
+            } else {
+                this.splitThumbStatus.textContent = 'Split Failed';
+                this.downloadSplitThumbsBtn.disabled = true;
+                this.log(`Thumbs split failed: ${data.error_details || data.message}`, 'error');
             }
         }
 
@@ -886,6 +950,25 @@
             });
 
             this.log(`Downloaded ${fingers.length} split finger images`, 'success');
+        }
+
+        downloadSplitThumbs() {
+            if (!this.currentSplitThumbsResult || !this.currentSplitThumbsResult.thumbs) {
+                this.log('No split thumb images to download', 'warning');
+                return;
+            }
+
+            const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+            const thumbs = this.currentSplitThumbsResult.thumbs;
+
+            thumbs.forEach((thumb, index) => {
+                if (thumb.image_data) {
+                    const filename = `thumb_${thumb.thumb_name || `thumb_${index + 1}`}_${timestamp}.png`;
+                    this.downloadImage(thumb.image_data, filename);
+                }
+            });
+
+            this.log(`Downloaded ${thumbs.length} split thumb images`, 'success');
         }
 
         sendMessage(message) {
