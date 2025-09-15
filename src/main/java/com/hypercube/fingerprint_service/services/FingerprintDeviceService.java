@@ -619,19 +619,8 @@ public class FingerprintDeviceService {
                     int fpNum = fpNumRef.getValue(); // Get the actual number of fingerprints found
                     logger.info("Attempt #{} - FPSPLIT_DoSplit returned: {}, fingerprints found: {}", attemptCount, ret, fpNum);
                     
-                    // CORRECTED: FPSPLIT_DoSplit returns 0 for success (not 1), following C# sample pattern
-                    if (ret != 0) {
-                        logger.warn("Attempt #{} - FPSPLIT_DoSplit failed with return code: {}, retrying...", attemptCount, ret);
-                        try {
-                            Thread.sleep(100); // Small delay before retry
-                        } catch (InterruptedException e) {
-                            Thread.currentThread().interrupt();
-                            break;
-                        }
-                        continue;
-                    }
-                    
-                    // Check if we found exactly 2 thumbs (like C# sample checks for fingernum)
+                    // CORRECTED: Following C# sample pattern - ignore return value, only check fpNum
+                    // The C# code only checks if (FingerNum > 0), not the return value
                     if (fpNum == expectedFingerprints) {
                         logger.info("Attempt #{} - SUCCESS! FPSPLIT splitting completed successfully. Found exactly {} thumbs as expected. Processing results...", attemptCount, fpNum);
                         
@@ -740,10 +729,10 @@ public class FingerprintDeviceService {
             // Step 1: Initialize fingerprint device (following C# sample sequence)
             logger.info("Step 1: Initializing fingerprint device (following C# sample sequence)");
             if (!initializeDevice(channel)) {
-                return Map.of(
-                    "success", false,
-                    "error_details", "Failed to initialize fingerprint device"
-                );
+                Map<String, Object> errorResponse = new HashMap<>();
+                errorResponse.put("success", false);
+                errorResponse.put("error_details", "Failed to initialize fingerprint device");
+                return errorResponse;
             }
             logger.info("Device initialized successfully");
             
@@ -809,8 +798,8 @@ public class FingerprintDeviceService {
                 
                 logger.info("Attempt #{} (elapsed: {}ms) - Capturing fingerprint image...", attemptCount, elapsed);
                 
-                // Capture fingerprint image
-                byte[] rawData = new byte[width * height];
+                // Capture fingerprint image (CORRECTED - using 2 bytes per pixel like other methods)
+                byte[] rawData = new byte[width * height * 2];
                 int captureRet = ID_FprCapLoad.ID_FprCapinterface.instance.LIVESCAN_GetFPRawData(channel, rawData);
                 
                 if (captureRet != 1) {
@@ -954,26 +943,26 @@ public class FingerprintDeviceService {
             
             // Timeout reached
             logger.error("Timeout reached after {} attempts in {}ms while trying to split four right fingers. Please ensure all four right fingers are clearly visible on the scanner.", attemptCount, timeout);
-            return Map.of(
-                "success", false,
-                "error_details", "Timeout reached after " + attemptCount + " attempts in " + timeout + "ms while trying to split four right fingers. Please ensure all four right fingers are clearly visible on the scanner.",
-                "timeout_ms", timeout,
-                "attempts_made", attemptCount,
-                "expected_fingerprints", expectedFingerprints
-            );
+            Map<String, Object> timeoutResponse = new HashMap<>();
+            timeoutResponse.put("success", false);
+            timeoutResponse.put("error_details", "Timeout reached after " + attemptCount + " attempts in " + timeout + "ms while trying to split four right fingers. Please ensure all four right fingers are clearly visible on the scanner.");
+            timeoutResponse.put("timeout_ms", timeout);
+            timeoutResponse.put("attempts_made", attemptCount);
+            timeoutResponse.put("expected_fingerprints", expectedFingerprints);
+            return timeoutResponse;
             
         } catch (UnsatisfiedLinkError e) {
             logger.error("Native library cannot be loaded. This SDK requires Windows. Error: {}", e.getMessage());
-            return Map.of(
-                "success", false,
-                "error_details", "Native library cannot be loaded. This SDK requires Windows."
-            );
+            Map<String, Object> errorResponse = new HashMap<>();
+            errorResponse.put("success", false);
+            errorResponse.put("error_details", "Native library cannot be loaded. This SDK requires Windows.");
+            return errorResponse;
         } catch (Exception e) {
             logger.error("Error splitting four right fingers for channel: {}: {}", channel, e.getMessage(), e);
-            return Map.of(
-                "success", false,
-                "error_details", "Error splitting four right fingers: " + e.getMessage()
-            );
+            Map<String, Object> errorResponse = new HashMap<>();
+            errorResponse.put("success", false);
+            errorResponse.put("error_details", "Error splitting four right fingers: " + e.getMessage());
+            return errorResponse;
         }
     }
     
