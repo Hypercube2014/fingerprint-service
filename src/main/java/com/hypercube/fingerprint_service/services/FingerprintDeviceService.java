@@ -605,7 +605,8 @@ public class FingerprintDeviceService {
                     int fpNum = fpNumRef.getValue(); // Get the actual number of fingerprints found
                     logger.info("Attempt #{} - FPSPLIT_DoSplit returned: {}, fingerprints found: {}", attemptCount, ret, fpNum);
                     
-                    if (ret != 1) {
+                    // CORRECTED: FPSPLIT_DoSplit returns 0 for success (not 1), following C# sample pattern
+                    if (ret != 0) {
                         logger.warn("Attempt #{} - FPSPLIT_DoSplit failed with return code: {}, retrying...", attemptCount, ret);
                         try {
                             Thread.sleep(100); // Small delay before retry
