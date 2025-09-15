@@ -1282,8 +1282,8 @@ public class FingerprintDeviceService {
     }
     
     /**
-     * Capture fingerprint template using ZAZ_FpStdLib
-     * This method captures a fingerprint image and generates templates in the specified format
+     * Capture fingerprint template using ZAZ_FpStdLib (following C# demo pattern)
+     * This method uses FPSPLIT to split 1600x1500 image into 256x360 images, then creates templates
      */
     public Map<String, Object> captureFingerprintTemplate(int channel, int width, int height, String format) {
         try {
@@ -1316,7 +1316,7 @@ public class FingerprintDeviceService {
                     logger.warn("Device calibration failed with return code: {}", calibRet);
                 }
                 
-                // Capture fingerprint image using the existing capture method
+                // FOLLOWING C# DEMO PATTERN: Capture 1600x1500 image first
                 Map<String, Object> captureResult = captureFingerprint(channel, width, height);
                 if (!(Boolean) captureResult.get("success")) {
                     return Map.of(
@@ -1329,139 +1329,161 @@ public class FingerprintDeviceService {
                 String base64Image = (String) captureResult.get("image");
                 byte[] imageData = Base64.getDecoder().decode(base64Image);
                 
-                // Convert image data to the format expected by ZAZ_FpStdLib (256x360)
-                // The ZAZ_FpStdLib expects 256x360 byte array, but we have width*height*2
-                // We need to resize/convert the image data
-                byte[] standardImageData = convertImageToStandardFormat(imageData, width, height);
+                // FOLLOWING C# DEMO PATTERN: Use FPSPLIT to split 1600x1500 into 256x360 images
+                int splitWidth = 256;
+                int splitHeight = 360;
+                int fingerNum = 0;
                 
-                // Check image quality using the improved quality assessment
-                int quality = assessFingerprintQuality(imageData, width, height);
-                logger.info("Fingerprint image quality: {}", quality);
+                // Prepare FPSPLIT_INFO structure (like C# demo)
+                int size = FPSPLIT_INFO.getStructureSize(); // 32 bytes on x64
+                Pointer infosPtr = new Memory(size * 10); // Space for up to 10 fingers
                 
-                if (quality < 10) {
+                // Allocate memory for each finger image (like C# demo)
+                for (int i = 0; i < 10; i++) {
+                    Pointer ptr = infosPtr.share(FPSPLIT_INFO.getMemoryOffset(i));
+                    Pointer p = new Memory(splitWidth * splitHeight);
+                    ptr.setPointer(0, p);
+                }
+                
+                // Perform the splitting (like C# demo)
+                IntByReference fpNumRef = new IntByReference(0);
+                int splitRet = FpSplitLoad.instance.FPSPLIT_DoSplit(
+                    imageData, width, height, 1, splitWidth, splitHeight, fpNumRef, infosPtr
+                );
+                
+                fingerNum = fpNumRef.getValue();
+                
+                if (splitRet != 1) {
                     return Map.of(
                         "success", false,
-                        "error_details", "Image quality too low: " + quality + ". Please place finger properly on scanner."
+                        "error_details", "Failed to split fingerprint image, return code: " + splitRet
                     );
                 }
                 
+                logger.info("FPSPLIT split successful, finger count: {}", fingerNum);
+                
+                if (fingerNum <= 0) {
+                    return Map.of(
+                        "success", false,
+                        "error_details", "No fingers detected in the image"
+                    );
+                }
+                
+                // FOLLOWING C# DEMO PATTERN: Check quality of each split image and create templates
+                byte[] rawdata = new byte[splitWidth * splitHeight * fingerNum];
+                byte[] raw = new byte[splitWidth * splitHeight];
+                boolean isQualityGood = true;
+                
+                // Extract and validate each finger image
+                for (int i = 0; i < fingerNum; i++) {
+                    Pointer ptr = infosPtr.share(FPSPLIT_INFO.getMemoryOffset(i));
+                    byte[] fingerData = ptr.getByteArray(0, splitWidth * splitHeight);
+                    
+                    // Check quality of this finger image (like C# demo)
+                    int fingerQuality = GamcLoad.instance.MOSAIC_FingerQuality(fingerData, splitWidth, splitHeight);
+                    logger.info("Finger {} quality: {}", i + 1, fingerQuality);
+                    
+                    if (fingerQuality < 20) {
+                        logger.warn("Finger {} quality too low: {}", i + 1, fingerQuality);
+                        isQualityGood = false;
+                        break;
+                    }
+                    
+                    // Copy to rawdata array
+                    System.arraycopy(fingerData, 0, rawdata, i * splitWidth * splitHeight, splitWidth * splitHeight);
+                }
+                
+                if (!isQualityGood) {
+                    return Map.of(
+                        "success", false,
+                        "error_details", "Fingerprint quality too low after splitting. Please place finger properly on scanner."
+                    );
+                }
+                
+                // FOLLOWING C# DEMO PATTERN: Create templates for each finger
+                byte[] fplist = new byte[1024 * fingerNum];
+                boolean fpsuccess = true;
+                
+                for (int i = 0; i < fingerNum; i++) {
+                    byte[] imgdata = new byte[splitWidth * splitHeight];
+                    System.arraycopy(rawdata, i * splitWidth * splitHeight, imgdata, 0, splitWidth * splitHeight);
+                    
+                    byte[] fp = new byte[1024];
+                    int templateRet = 0;
+                    
+                    if ("ISO".equals(format) || "BOTH".equals(format)) {
+                        templateRet = ZAZ_FpStdLib.INSTANCE.ZAZ_FpStdLib_CreateISOTemplate(deviceHandle, imgdata, fp);
+                    } else if ("ANSI".equals(format)) {
+                        templateRet = ZAZ_FpStdLib.INSTANCE.ZAZ_FpStdLib_CreateANSITemplate(deviceHandle, imgdata, fp);
+                    }
+                    
+                    if (templateRet > 0) {
+                        System.arraycopy(fp, 0, fplist, i * 1024, 1024);
+                        logger.info("Template created successfully for finger {}, return code: {}", i + 1, templateRet);
+                    } else {
+                        logger.error("Failed to create template for finger {}, return code: {}", i + 1, templateRet);
+                        fpsuccess = false;
+                        break;
+                    }
+                }
+                
+                if (!fpsuccess) {
+                    return Map.of(
+                        "success", false,
+                        "error_details", "Failed to create templates for all fingers"
+                    );
+                }
+                
+                // Prepare result
                 Map<String, Object> result = new HashMap<>();
                 result.put("success", true);
-                result.put("quality_score", quality);
-                result.put("template_size", 1024); // Standard template size
+                result.put("channel", channel);
+                result.put("format", format);
+                result.put("finger_count", fingerNum);
+                result.put("template_size", 1024);
+                result.put("timestamp", System.currentTimeMillis());
                 
-                // Generate templates based on format
-                if ("ISO".equals(format)) {
-                    byte[] isoTemplate = new byte[1024];
-                    
-                    // Try multiple approaches for template creation
-                    int isoRet = 0;
-                    String debugInfo = "";
-                    
-                    // Method 1: Try with converted image
-                    isoRet = ZAZ_FpStdLib.INSTANCE.ZAZ_FpStdLib_CreateISOTemplate(deviceHandle, standardImageData, isoTemplate);
-                    debugInfo += "Method 1 (converted): " + isoRet + "; ";
-                    
-                    if (isoRet <= 0) {
-                        // Method 2: Try with 8-bit converted image
-                        try {
-                            byte[] eightBitData = convert16BitTo8Bit(imageData, width, height);
-                            // Resize to 256x360
-                            byte[] resizedEightBit = resizeImage(eightBitData, width, height, 256, 360);
-                            isoRet = ZAZ_FpStdLib.INSTANCE.ZAZ_FpStdLib_CreateISOTemplate(deviceHandle, resizedEightBit, isoTemplate);
-                            debugInfo += "Method 2 (8-bit resized): " + isoRet + "; ";
-                        } catch (Exception e) {
-                            debugInfo += "Method 2 failed: " + e.getMessage() + "; ";
-                        }
-                    }
-                    
-                    if (isoRet <= 0) {
-                        // Method 3: Try with raw 8-bit data (no resizing)
-                        try {
-                            byte[] eightBitData = convert16BitTo8Bit(imageData, width, height);
-                            isoRet = ZAZ_FpStdLib.INSTANCE.ZAZ_FpStdLib_CreateISOTemplate(deviceHandle, eightBitData, isoTemplate);
-                            debugInfo += "Method 3 (8-bit raw): " + isoRet + "; ";
-                        } catch (Exception e) {
-                            debugInfo += "Method 3 failed: " + e.getMessage() + "; ";
-                        }
-                    }
-                    
-                    logger.info("ISO template creation attempts: {}", debugInfo);
-                    
-                    if (isoRet > 0) {
-                        String isoTemplateBase64 = Base64.getEncoder().encodeToString(isoTemplate);
-                        result.put("template_data", isoTemplateBase64);
-                        result.put("debug_info", debugInfo);
-                        logger.info("ISO template created successfully, return code: {}", isoRet);
-                    } else {
-                        return Map.of(
-                            "success", false,
-                            "error_details", "Failed to create ISO template, return code: " + isoRet + ". Debug info: " + debugInfo
-                        );
-                    }
-                } else if ("ANSI".equals(format)) {
-                    byte[] ansiTemplate = new byte[1024];
-                    int ansiRet = ZAZ_FpStdLib.INSTANCE.ZAZ_FpStdLib_CreateANSITemplate(deviceHandle, standardImageData, ansiTemplate);
-                    if (ansiRet > 0) {
-                        String ansiTemplateBase64 = Base64.getEncoder().encodeToString(ansiTemplate);
-                        result.put("template_data", ansiTemplateBase64);
-                        logger.info("ANSI template created successfully, return code: {}", ansiRet);
-                    } else {
-                        return Map.of(
-                            "success", false,
-                            "error_details", "Failed to create ANSI template, return code: " + ansiRet
-                        );
-                    }
-                } else if ("BOTH".equals(format)) {
-                    // Create both ISO and ANSI templates
-                    byte[] isoTemplate = new byte[1024];
-                    byte[] ansiTemplate = new byte[1024];
-                    
-                    int isoRet = ZAZ_FpStdLib.INSTANCE.ZAZ_FpStdLib_CreateISOTemplate(deviceHandle, standardImageData, isoTemplate);
-                    int ansiRet = ZAZ_FpStdLib.INSTANCE.ZAZ_FpStdLib_CreateANSITemplate(deviceHandle, standardImageData, ansiTemplate);
-                    
-                    if (isoRet > 0 && ansiRet > 0) {
-                        String isoTemplateBase64 = Base64.getEncoder().encodeToString(isoTemplate);
-                        String ansiTemplateBase64 = Base64.getEncoder().encodeToString(ansiTemplate);
-                        result.put("iso_template", Map.of(
-                            "format", "ISO",
-                            "template_data", isoTemplateBase64,
-                            "template_size", 1024
-                        ));
-                        result.put("ansi_template", Map.of(
-                            "format", "ANSI", 
-                            "template_data", ansiTemplateBase64,
-                            "template_size", 1024
-                        ));
-                        logger.info("Both templates created successfully - ISO: {}, ANSI: {}", isoRet, ansiRet);
-                    } else {
-                        return Map.of(
-                            "success", false,
-                            "error_details", "Failed to create templates - ISO: " + isoRet + ", ANSI: " + ansiRet
-                        );
-                    }
-                } else {
-                    return Map.of(
-                        "success", false,
-                        "error_details", "Invalid template format: " + format + ". Supported formats: ISO, ANSI, BOTH"
-                    );
+                // Encode templates based on format
+                if ("ISO".equals(format) || "BOTH".equals(format)) {
+                    String isoTemplateBase64 = Base64.getEncoder().encodeToString(fplist);
+                    result.put("template_data", isoTemplateBase64);
                 }
                 
+                if ("ANSI".equals(format) || "BOTH".equals(format)) {
+                    // For ANSI, we need to create separate templates
+                    byte[] ansiFplist = new byte[1024 * fingerNum];
+                    boolean ansiSuccess = true;
+                    
+                    for (int i = 0; i < fingerNum; i++) {
+                        byte[] imgdata = new byte[splitWidth * splitHeight];
+                        System.arraycopy(rawdata, i * splitWidth * splitHeight, imgdata, 0, splitWidth * splitHeight);
+                        
+                        byte[] ansiFp = new byte[1024];
+                        int ansiRet = ZAZ_FpStdLib.INSTANCE.ZAZ_FpStdLib_CreateANSITemplate(deviceHandle, imgdata, ansiFp);
+                        
+                        if (ansiRet > 0) {
+                            System.arraycopy(ansiFp, 0, ansiFplist, i * 1024, 1024);
+                        } else {
+                            ansiSuccess = false;
+                            break;
+                        }
+                    }
+                    
+                    if (ansiSuccess) {
+                        String ansiTemplateBase64 = Base64.getEncoder().encodeToString(ansiFplist);
+                        result.put("ansi_template_data", ansiTemplateBase64);
+                    }
+                }
+                
+                logger.info("Successfully created {} templates for {} fingers", format, fingerNum);
                 return result;
                 
             } finally {
-                // Close the ZAZ_FpStdLib device
                 ZAZ_FpStdLib.INSTANCE.ZAZ_FpStdLib_CloseDevice(deviceHandle);
             }
             
-        } catch (UnsatisfiedLinkError e) {
-            logger.error("Native library cannot be loaded. This is likely because you're running on Linux but the SDK requires Windows DLLs. Error: {}", e.getMessage());
-            return Map.of(
-                "success", false,
-                "error_details", "Native library cannot be loaded. This SDK requires Windows."
-            );
         } catch (Exception e) {
-            logger.error("Error capturing fingerprint template for channel: {}: {}", channel, e.getMessage(), e);
+            logger.error("Error capturing fingerprint template: {}", e.getMessage(), e);
             return Map.of(
                 "success", false,
                 "error_details", "Error capturing fingerprint template: " + e.getMessage()
