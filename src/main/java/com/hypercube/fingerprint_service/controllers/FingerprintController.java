@@ -477,6 +477,58 @@ public class FingerprintController {
     }
     
     /**
+     * Validate image quality without capturing
+     * This endpoint helps debug quality issues by testing the quality assessment methods
+     */
+    @PostMapping("/quality/validate")
+    public ResponseEntity<Map<String, Object>> validateQuality(
+            @RequestParam(defaultValue = "0") int channel,
+            @RequestParam(defaultValue = "1600") int width,
+            @RequestParam(defaultValue = "1500") int height) {
+        
+        try {
+            // Check platform compatibility first
+            if (!deviceService.isPlatformSupported()) {
+                return ResponseEntity.status(400).body(Map.of(
+                    "success", false,
+                    "message", "Platform not supported. This SDK requires Windows.",
+                    "platform_info", deviceService.getPlatformInfo(),
+                    "timestamp", System.currentTimeMillis()
+                ));
+            }
+            
+            // Check if device is initialized
+            if (!deviceService.isDeviceInitialized(channel)) {
+                logger.info("Device not initialized for channel {}, attempting to initialize", channel);
+                boolean initSuccess = deviceService.initializeDevice(channel);
+                if (!initSuccess) {
+                    return ResponseEntity.status(500).body(Map.of(
+                        "success", false,
+                        "message", "Device not initialized and initialization failed",
+                        "channel", channel,
+                        "platform_info", deviceService.getPlatformInfo(),
+                        "timestamp", System.currentTimeMillis()
+                    ));
+                }
+            }
+            
+            // Test quality validation
+            Map<String, Object> qualityResult = deviceService.validateImageQuality(channel, width, height);
+            return ResponseEntity.ok(qualityResult);
+            
+        } catch (Exception e) {
+            logger.error("Error validating image quality for channel {}: {}", channel, e.getMessage(), e);
+            return ResponseEntity.status(500).body(Map.of(
+                "success", false,
+                "message", "Error validating image quality: " + e.getMessage(),
+                "channel", channel,
+                "platform_info", deviceService.getPlatformInfo(),
+                "timestamp", System.currentTimeMillis()
+            ));
+        }
+    }
+    
+    /**
      * Get storage statistics
      */
     @GetMapping("/storage/stats")

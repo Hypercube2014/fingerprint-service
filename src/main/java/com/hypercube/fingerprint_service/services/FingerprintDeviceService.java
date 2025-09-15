@@ -139,6 +139,10 @@ public class FingerprintDeviceService {
             // Assess quality
             int quality = assessFingerprintQuality(rawData, width, height);
             
+            // Provide quality feedback based on demo implementations
+            String qualityMessage = getQualityMessage(quality);
+            logger.info("Fingerprint quality assessment: {} - {}", quality, qualityMessage);
+            
             // Store the image automatically as normal image file
             String customName = String.format("channel_%d_%dx%d", channel, width, height);
             FingerprintFileStorageService.FileStorageResult storageResult = 
@@ -156,6 +160,7 @@ public class FingerprintDeviceService {
                 "success", true,
                 "image", base64Image,
                 "quality_score", quality,
+                "quality_message", qualityMessage,
                 "storage_success", storageResult.isSuccess(),
                 "file_path", storageResult.getFilePath(),
                 "filename", storageResult.getFilename(),
@@ -178,22 +183,52 @@ public class FingerprintDeviceService {
     }
     
     /**
-     * Assess fingerprint quality
+     * Assess fingerprint quality using multiple methods for better accuracy
      */
     private int assessFingerprintQuality(byte[] imageData, int width, int height) {
         try {
-            // Use the SDK's quality assessment if available
-            if (GamcLoad.instance.MOSAIC_IsSupportFingerQuality() == 1) {
-                return GamcLoad.instance.MOSAIC_FingerQuality(imageData, width, height);
+            // Method 1: Try ZAZ_FpStdLib quality assessment (most reliable for templates)
+            try {
+                long deviceHandle = ZAZ_FpStdLib.INSTANCE.ZAZ_FpStdLib_OpenDevice();
+                if (deviceHandle != 0) {
+                    try {
+                        // Convert image to standard format for ZAZ_FpStdLib
+                        byte[] standardImage = convertImageToStandardFormat(imageData, width, height);
+                        int quality = ZAZ_FpStdLib.INSTANCE.ZAZ_FpStdLib_GetImageQuality(deviceHandle, standardImage);
+                        logger.debug("ZAZ_FpStdLib quality assessment: {}", quality);
+                        return quality;
+                    } finally {
+                        ZAZ_FpStdLib.INSTANCE.ZAZ_FpStdLib_CloseDevice(deviceHandle);
+                    }
+                }
+            } catch (Exception e) {
+                logger.debug("ZAZ_FpStdLib quality assessment failed: {}", e.getMessage());
             }
             
-            // Fallback to basic quality assessment
-            return calculateBasicQuality(imageData, width, height);
+            // Method 2: Use MOSAIC quality assessment if available
+            try {
+                if (GamcLoad.instance.MOSAIC_IsSupportFingerQuality() == 1) {
+                    int quality = GamcLoad.instance.MOSAIC_FingerQuality(imageData, width, height);
+                    logger.debug("MOSAIC quality assessment: {}", quality);
+                    // MOSAIC returns -1 for bad quality, convert to 0-100 scale
+                    if (quality < 0) {
+                        return 0;
+                    }
+                    return Math.min(100, quality);
+                }
+            } catch (Exception e) {
+                logger.debug("MOSAIC quality assessment failed: {}", e.getMessage());
+            }
+            
+            // Method 3: Fallback to basic quality assessment
+            int basicQuality = calculateBasicQuality(imageData, width, height);
+            logger.debug("Basic quality assessment: {}", basicQuality);
+            return basicQuality;
             
         } catch (Exception e) {
             logger.warn("Error assessing fingerprint quality, using default score: {}", e.getMessage());
             // Return default quality score
-            return 75;
+            return 50;
         }
     }
     
@@ -244,6 +279,21 @@ public class FingerprintDeviceService {
         else if (coverage > 0.1 && coverage < 0.9) quality += 15;
 
         return Math.min(100, Math.max(0, quality));
+    }
+    
+    /**
+     * Get quality message based on quality score (following demo implementations)
+     */
+    private String getQualityMessage(int quality) {
+        if (quality < 10) {
+            return "Please place finger properly on scanner";
+        } else if (quality < 20) {
+            return "Image captured successfully, but quality is low";
+        } else if (quality < 50) {
+            return "Image captured successfully, quality is acceptable";
+        } else {
+            return "Image quality is good, ready for template generation";
+        }
     }
     
     /**
@@ -441,7 +491,7 @@ public class FingerprintDeviceService {
                     int quality = assessFingerprintQuality(rawData, width, height);
                     logger.info("Attempt #{} - Image quality score: {}", attemptCount, quality);
                     
-                    if (quality < 0) {
+                    if (quality < 10) {
                         logger.warn("Attempt #{} - Image quality too low ({}), retrying...", attemptCount, quality);
                         try {
                             Thread.sleep(100); // Small delay before retry
@@ -1208,8 +1258,8 @@ public class FingerprintDeviceService {
                 // We need to resize/convert the image data
                 byte[] standardImageData = convertImageToStandardFormat(imageData, width, height);
                 
-                // Check image quality
-                int quality = ZAZ_FpStdLib.INSTANCE.ZAZ_FpStdLib_GetImageQuality(deviceHandle, standardImageData);
+                // Check image quality using the improved quality assessment
+                int quality = assessFingerprintQuality(imageData, width, height);
                 logger.info("Fingerprint image quality: {}", quality);
                 
                 if (quality < 10) {
@@ -1406,6 +1456,120 @@ public class FingerprintDeviceService {
             return Map.of(
                 "success", false,
                 "error_details", "Error comparing fingerprint templates: " + e.getMessage()
+            );
+        }
+    }
+    
+    /**
+     * Validate image quality using multiple methods
+     * This method helps debug quality assessment issues
+     */
+    public Map<String, Object> validateImageQuality(int channel, int width, int height) {
+        try {
+            logger.info("Validating image quality for channel: {} with dimensions: {}x{}", channel, width, height);
+            
+            // Check platform compatibility
+            if (!isWindows) {
+                return Map.of(
+                    "success", false,
+                    "error_details", "Platform not supported. This SDK requires Windows."
+                );
+            }
+            
+            // Capture a test image
+            byte[] rawData = new byte[width * height * 2];
+            int captureRet = ID_FprCapLoad.ID_FprCapinterface.instance.LIVESCAN_GetFPRawData(channel, rawData);
+            
+            if (captureRet != 1) {
+                return Map.of(
+                    "success", false,
+                    "error_details", "Failed to capture test image. Return code: " + captureRet
+                );
+            }
+            
+            // Test different quality assessment methods
+            Map<String, Object> results = new HashMap<>();
+            results.put("success", true);
+            results.put("channel", channel);
+            results.put("width", width);
+            results.put("height", height);
+            results.put("image_size_bytes", rawData.length);
+            
+            // Method 1: ZAZ_FpStdLib quality assessment
+            try {
+                long deviceHandle = ZAZ_FpStdLib.INSTANCE.ZAZ_FpStdLib_OpenDevice();
+                if (deviceHandle != 0) {
+                    try {
+                        byte[] standardImage = convertImageToStandardFormat(rawData, width, height);
+                        int zazQuality = ZAZ_FpStdLib.INSTANCE.ZAZ_FpStdLib_GetImageQuality(deviceHandle, standardImage);
+                        results.put("zaz_quality", zazQuality);
+                        results.put("zaz_quality_message", getQualityMessage(zazQuality));
+                    } finally {
+                        ZAZ_FpStdLib.INSTANCE.ZAZ_FpStdLib_CloseDevice(deviceHandle);
+                    }
+                } else {
+                    results.put("zaz_quality", "Failed to open device");
+                }
+            } catch (Exception e) {
+                results.put("zaz_quality", "Error: " + e.getMessage());
+            }
+            
+            // Method 2: MOSAIC quality assessment
+            try {
+                if (GamcLoad.instance.MOSAIC_IsSupportFingerQuality() == 1) {
+                    int mosaicQuality = GamcLoad.instance.MOSAIC_FingerQuality(rawData, width, height);
+                    results.put("mosaic_quality", mosaicQuality);
+                    results.put("mosaic_quality_message", mosaicQuality < 0 ? "Bad quality" : getQualityMessage(mosaicQuality));
+                } else {
+                    results.put("mosaic_quality", "Not supported");
+                }
+            } catch (Exception e) {
+                results.put("mosaic_quality", "Error: " + e.getMessage());
+            }
+            
+            // Method 3: Basic quality assessment
+            try {
+                int basicQuality = calculateBasicQuality(rawData, width, height);
+                results.put("basic_quality", basicQuality);
+                results.put("basic_quality_message", getQualityMessage(basicQuality));
+            } catch (Exception e) {
+                results.put("basic_quality", "Error: " + e.getMessage());
+            }
+            
+            // Method 4: Combined assessment (current implementation)
+            try {
+                int combinedQuality = assessFingerprintQuality(rawData, width, height);
+                results.put("combined_quality", combinedQuality);
+                results.put("combined_quality_message", getQualityMessage(combinedQuality));
+            } catch (Exception e) {
+                results.put("combined_quality", "Error: " + e.getMessage());
+            }
+            
+            // Quality recommendations
+            List<String> recommendations = new ArrayList<>();
+            if (results.containsKey("zaz_quality") && results.get("zaz_quality") instanceof Integer) {
+                int zazQuality = (Integer) results.get("zaz_quality");
+                if (zazQuality < 10) {
+                    recommendations.add("ZAZ quality too low - ensure finger is properly placed");
+                }
+            }
+            if (results.containsKey("mosaic_quality") && results.get("mosaic_quality") instanceof Integer) {
+                int mosaicQuality = (Integer) results.get("mosaic_quality");
+                if (mosaicQuality < 0) {
+                    recommendations.add("MOSAIC detected bad quality - check finger placement");
+                }
+            }
+            
+            results.put("recommendations", recommendations);
+            results.put("timestamp", System.currentTimeMillis());
+            
+            return results;
+            
+        } catch (Exception e) {
+            logger.error("Error validating image quality for channel: {}: {}", channel, e.getMessage(), e);
+            return Map.of(
+                "success", false,
+                "error_details", "Error validating image quality: " + e.getMessage()
             );
         }
     }
