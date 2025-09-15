@@ -584,13 +584,15 @@ public class FingerprintDeviceService {
                     logger.debug("Preparing split buffers and performing FPSPLIT_DoSplit (NO FPSPLIT_Init needed)");
                     
                     // CORRECTED: Use FPSPLIT_INFO structure constants for proper memory allocation (like C# sample)
-                    int size = FPSPLIT_INFO.getStructureSize(); // 32 bytes on x64
+                    int size = FPSPLIT_INFO.getStructureSize(); // 28 bytes on x64
                     Pointer infosPtr = new Memory(size * 10); // Space for 10 fingerprints (like C# sample)
                     
                     // CORRECTED: Use FPSPLIT_INFO constants for correct offset calculation (like C# sample)
                     // Prepare memory for each fingerprint's output buffer (following C# sample pattern exactly)
                     for (int i = 0; i < 10; i++) { // Allocate for 10 fingerprints like C# sample
-                        Pointer ptr = infosPtr.share(FPSPLIT_INFO.getMemoryOffset(i)); // Correct offset calculation
+                        // Calculate offset to pOutBuf field within each structure (like C#: i * size + 24)
+                        int pOutBufOffset = i * size + FPSPLIT_INFO.getPOutBufOffset();
+                        Pointer ptr = infosPtr.share(pOutBufOffset);
                         Pointer p = new Memory(splitWidth * splitHeight);
                         ptr.setPointer(0, p);
                     }
@@ -1131,7 +1133,9 @@ public class FingerprintDeviceService {
             Pointer infosPtr = new Memory(size * 10);
             
             for (int i = 0; i < 10; i++) {
-                Pointer ptr = infosPtr.share(FPSPLIT_INFO.getMemoryOffset(i));
+                // Calculate offset to pOutBuf field within each structure (like C#: i * size + 24)
+                int pOutBufOffset = i * size + FPSPLIT_INFO.getPOutBufOffset();
+                Pointer ptr = infosPtr.share(pOutBufOffset);
                 Pointer p = new Memory(300 * 400);
                 ptr.setPointer(0, p);
             }
