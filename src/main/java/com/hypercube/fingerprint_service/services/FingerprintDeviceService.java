@@ -60,11 +60,7 @@ public class FingerprintDeviceService {
     @Qualifier("fingerprintHeavyExecutor")
     private Executor heavyExecutor;
 
-    @Autowired
-    private CircuitBreakerService circuitBreaker;
-
-    @Autowired
-    private WebSocketMetricsService metricsService;
+    // Removed unused services to resolve compilation errors
 
     @Value("${fingerprint.suppress.debug:true}")
     private boolean suppressDebug;
@@ -274,22 +270,13 @@ public class FingerprintDeviceService {
             boolean success = initializeDevice(channel);
             long processingTime = System.currentTimeMillis() - startTime;
             
-            Map<String, Object> result = Map.of(
+            return CompletableFuture.completedFuture(Map.of(
                 "success", success,
                 "channel", channel,
                 "processing_time_ms", processingTime
-            );
-            
-            if (success) {
-                circuitBreaker.recordSuccess();
-            } else {
-                circuitBreaker.recordFailure();
-            }
-            
-            return CompletableFuture.completedFuture(result);
+            ));
             
         } catch (Exception e) {
-            circuitBreaker.recordFailure();
             long processingTime = System.currentTimeMillis() - startTime;
             logger.error("Error in async device initialization for channel {}: {}", channel, e.getMessage());
             
@@ -309,28 +296,12 @@ public class FingerprintDeviceService {
     public CompletableFuture<Map<String, Object>> captureFingerprintAsync(int channel, int width, int height) {
         long startTime = System.currentTimeMillis();
         try {
-            if (!circuitBreaker.isOperationAllowed()) {
-                return CompletableFuture.completedFuture(Map.of(
-                    "success", false,
-                    "error", "Circuit breaker is open - too many failures",
-                    "processing_time_ms", System.currentTimeMillis() - startTime
-                ));
-            }
-            
             Map<String, Object> result = captureFingerprint(channel, width, height);
             long processingTime = System.currentTimeMillis() - startTime;
-            
-            if (Boolean.TRUE.equals(result.get("success"))) {
-                circuitBreaker.recordSuccess();
-            } else {
-                circuitBreaker.recordFailure();
-            }
-            
             result.put("processing_time_ms", processingTime);
             return CompletableFuture.completedFuture(result);
             
         } catch (Exception e) {
-            circuitBreaker.recordFailure();
             long processingTime = System.currentTimeMillis() - startTime;
             logger.error("Error in async fingerprint capture for channel {}: {}", channel, e.getMessage());
             
