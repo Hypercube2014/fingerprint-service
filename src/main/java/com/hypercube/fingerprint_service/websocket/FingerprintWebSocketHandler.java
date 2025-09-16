@@ -295,7 +295,8 @@ public class FingerprintWebSocketHandler implements WebSocketHandler {
             int channel = getIntValue(messageData, "channel", 0);
             int width = getIntValue(messageData, "width", 1600);
             int height = getIntValue(messageData, "height", 1500);
-            int splitWidth = getIntValue(messageData, "splitWidth", 256);  // C# sample uses 256x360 for four fingers
+            // CORRECTED: Use proper dimensions for four fingers (following C# sample: 256×360 for fingers, 300×400 for thumbs)
+            int splitWidth = getIntValue(messageData, "splitWidth", 256);
             int splitHeight = getIntValue(messageData, "splitHeight", 360);
 
             logger.info("Splitting four right fingers for session {}: channel={}, dimensions={}x{}, split={}x{}",
