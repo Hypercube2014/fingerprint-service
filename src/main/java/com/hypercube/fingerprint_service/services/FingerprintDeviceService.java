@@ -1128,7 +1128,7 @@ public class FingerprintDeviceService {
                 finger.put("filename", storageResult.getFilename());
                 finger.put("file_path", storageResult.getFilePath());
                 finger.put("file_size", storageResult.getFileSize());
-                finger.put("image", Base64.getEncoder().encodeToString(fingerData));
+                // finger.put("image", Base64.getEncoder().encodeToString(fingerData));
                 
                 logger.info("Successfully processed and stored {} at position {}", fingerName, position);
                 return finger;
