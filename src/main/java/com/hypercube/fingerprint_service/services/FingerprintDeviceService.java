@@ -188,17 +188,54 @@ public class FingerprintDeviceService {
     }
     
     /**
-     * Assess fingerprint quality using multiple methods for better accuracy
+     * Assess fingerprint quality using SDK methods (following demo implementations)
+     * Primary: MOSAIC_FingerQuality for live capture
+     * Secondary: ZAZ_FpStdLib_GetImageQuality for template generation
      */
     private int assessFingerprintQuality(byte[] imageData, int width, int height) {
+        return assessFingerprintQuality(imageData, width, height, false);
+    }
+    
+    /**
+     * Assess fingerprint quality with option for template generation mode
+     * @param forTemplate true if assessing for template generation, false for live capture
+     */
+    private int assessFingerprintQuality(byte[] imageData, int width, int height, boolean forTemplate) {
         try {
-            // Method 1: Try ZAZ_FpStdLib quality assessment (most reliable for templates)
+            // Method 1: Use MOSAIC quality assessment for live capture (like C# sample)
+            if (!forTemplate) {
+                try {
+                    if (GamcLoad.instance.MOSAIC_IsSupportFingerQuality() == 1) {
+                        int quality = GamcLoad.instance.MOSAIC_FingerQuality(imageData, width, height);
+                        logger.debug("MOSAIC quality assessment: {}", quality);
+                        
+                        // MOSAIC returns -1 for no finger or very bad quality (like C# sample)
+                        if (quality < 0) {
+                            logger.debug("MOSAIC indicates no finger detected or very bad quality");
+                            return -1; // Indicates retry needed
+                        }
+                        
+                        // Return quality score directly (MOSAIC already gives 0-100+ range)
+                        return quality;
+                    }
+                } catch (Exception e) {
+                    logger.debug("MOSAIC quality assessment failed: {}", e.getMessage());
+                }
+            }
+            
+            // Method 2: Use ZAZ_FpStdLib quality assessment for template generation (like Java demo)
             try {
                 long deviceHandle = ZAZ_FpStdLib.INSTANCE.ZAZ_FpStdLib_OpenDevice();
                 if (deviceHandle != 0) {
                     try {
-                        // Convert image to standard format for ZAZ_FpStdLib
-                        byte[] standardImage = convertImageToStandardFormat(imageData, width, height);
+                        // For ZAZ_FpStdLib, we need standard format (256x360 for single finger)
+                        byte[] standardImage;
+                        if (width == 256 && height == 360) {
+                            standardImage = imageData;
+                        } else {
+                            standardImage = convertImageToStandardFormat(imageData, width, height);
+                        }
+                        
                         int quality = ZAZ_FpStdLib.INSTANCE.ZAZ_FpStdLib_GetImageQuality(deviceHandle, standardImage);
                         logger.debug("ZAZ_FpStdLib quality assessment: {}", quality);
                         return quality;
@@ -210,36 +247,7 @@ public class FingerprintDeviceService {
                 logger.debug("ZAZ_FpStdLib quality assessment failed: {}", e.getMessage());
             }
             
-            // Method 2: Use MOSAIC quality assessment if available
-            try {
-                if (GamcLoad.instance.MOSAIC_IsSupportFingerQuality() == 1) {
-                    int quality = GamcLoad.instance.MOSAIC_FingerQuality(imageData, width, height);
-                    logger.debug("MOSAIC quality assessment: {}", quality);
-                    // MOSAIC returns -1 for bad quality, convert to 0-100 scale
-                    if (quality < 0) {
-                        return 0;
-                    }
-                    return Math.min(100, quality);
-                }
-            } catch (Exception e) {
-                logger.debug("MOSAIC quality assessment failed: {}", e.getMessage());
-            }
-            
-            // Method 3: Try MOSAIC quality assessment on 8-bit data directly
-            try {
-                if (GamcLoad.instance.MOSAIC_IsSupportFingerQuality() == 1) {
-                    // Data is already 8-bit, use directly
-                    int mosaicQuality = GamcLoad.instance.MOSAIC_FingerQuality(imageData, width, height);
-                    logger.debug("MOSAIC quality assessment (8-bit): {}", mosaicQuality);
-                    if (mosaicQuality >= 0) {
-                        return Math.min(100, mosaicQuality);
-                    }
-                }
-            } catch (Exception e) {
-                logger.debug("MOSAIC quality assessment (8-bit) failed: {}", e.getMessage());
-            }
-            
-            // Method 4: Fallback to basic quality assessment
+            // Method 3: Fallback to basic quality assessment
             int basicQuality = calculateBasicQuality(imageData, width, height);
             logger.debug("Basic quality assessment: {}", basicQuality);
             return basicQuality;
@@ -247,7 +255,7 @@ public class FingerprintDeviceService {
         } catch (Exception e) {
             logger.warn("Error assessing fingerprint quality, using default score: {}", e.getMessage());
             // Return default quality score
-            return 50;
+            return 30;
         }
     }
     
@@ -362,17 +370,17 @@ public class FingerprintDeviceService {
     }
     
     /**
-     * Get quality message based on quality score (following demo implementations)
+     * Get quality message based on quality score (following Java demo implementation)
      */
     private String getQualityMessage(int quality) {
-        if (quality < 10) {
+        if (quality < 0) {
+            return "No finger detected - please place finger properly on scanner";
+        } else if (quality < 10) {
             return "Please place finger properly on scanner";
-        } else if (quality < 20) {
-            return "Image captured successfully, but quality is low";
         } else if (quality < 50) {
-            return "Image captured successfully, quality is acceptable";
+            return "Image captured successfully, quality = " + quality;
         } else {
-            return "Image quality is good, ready for template generation";
+            return "Image quality is good, ready for template generation (quality = " + quality + ")";
         }
     }
     
@@ -567,10 +575,23 @@ public class FingerprintDeviceService {
                     }
                     
                     logger.info("Attempt #{} - Image captured successfully, checking quality...", attemptCount);
-                    // CORRECTED: Add quality check before split (like C# sample)
+                    // CORRECTED: Add quality check before split (following demo implementations)
                     int quality = assessFingerprintQuality(rawData, width, height);
                     logger.info("Attempt #{} - Image quality score: {}", attemptCount, quality);
                     
+                    // Handle negative quality (no finger detected) - following MOSAIC behavior
+                    if (quality < 0) {
+                        logger.warn("Attempt #{} - No finger detected, retrying...", attemptCount);
+                        try {
+                            Thread.sleep(200); // Longer delay for finger placement
+                        } catch (InterruptedException e) {
+                            Thread.currentThread().interrupt();
+                            break;
+                        }
+                        continue;
+                    }
+                    
+                    // Following Java demo: quality < 10 means finger placement issue
                     if (quality < 10) {
                         logger.warn("Attempt #{} - Image quality too low ({}), retrying...", attemptCount, quality);
                         try {
@@ -591,32 +612,21 @@ public class FingerprintDeviceService {
                     // CORRECTED: Use FPSPLIT_INFO structure constants for proper memory allocation (like C# sample)
                     int size = FPSPLIT_INFO.getStructureSize(); // 28 bytes on x64
                     int maxFingerprints = 10; // Maximum fingerprints supported by FPSPLIT
-                    
-                    // CRITICAL: Add extra padding to ensure we don't exceed bounds
-                    // The C# sample shows offset can go up to (9 * 28 + 24) = 276, but we're seeing 284
-                    // This suggests the actual structure might be larger or there's alignment padding
-                    int totalMemoryNeeded = size * maxFingerprints + 32; // Add extra padding for safety
-                    Pointer infosPtr = new Memory(totalMemoryNeeded); // Allocate space for structures
-                    logger.debug("Allocated {} bytes (base: {}, padding: 32) for {} structures of {} bytes each", totalMemoryNeeded, size * maxFingerprints, maxFingerprints, size);
+                    Pointer infosPtr = new Memory(size * maxFingerprints); // Allocate space for structures
+                    logger.debug("Allocated {} bytes for {} structures of {} bytes each", size * maxFingerprints, maxFingerprints, size);
                     
                     // CORRECTED: Use FPSPLIT_INFO constants for correct offset calculation (like C# sample)
                     // Prepare memory for each fingerprint's output buffer (following C# sample pattern exactly)
                     for (int i = 0; i < maxFingerprints; i++) {
                         // Calculate offset to pOutBuf field within each structure (like C#: i * size + 24)
                         int pOutBufOffset = i * size + FPSPLIT_INFO.getPOutBufOffset();
-                        logger.debug("Structure {}: pOutBufOffset = {} * {} + {} = {}, totalMemory = {}", i, i, size, FPSPLIT_INFO.getPOutBufOffset(), pOutBufOffset, totalMemoryNeeded);
+                        logger.debug("Structure {}: pOutBufOffset = {} * {} + {} = {}", i, i, size, FPSPLIT_INFO.getPOutBufOffset(), pOutBufOffset);
                         
                         // Allocate memory for this fingerprint's image data
                         Pointer p = new Memory(splitWidth * splitHeight);
                         
                         // Write the pointer address to the structure (like C# Marshal.WriteIntPtr(ptr, p))
-                        try {
-                            infosPtr.setPointer(pOutBufOffset, p);
-                            logger.debug("Successfully set pointer for structure {} at offset {}", i, pOutBufOffset);
-                        } catch (IndexOutOfBoundsException e) {
-                            logger.error("BOUNDS ERROR: Structure {}, offset {}, totalMemory {}, error: {}", i, pOutBufOffset, totalMemoryNeeded, e.getMessage());
-                            throw e;
-                        }
+                        infosPtr.setPointer(pOutBufOffset, p);
                     }
                     
                     // Perform the splitting (CORRECTED - using IntByReference like C# ref int)
@@ -848,11 +858,24 @@ public class FingerprintDeviceService {
                 
                 logger.info("Attempt #{} - Image captured successfully, checking quality...", attemptCount);
                 
-                // Check image quality
+                // Check image quality (following demo implementations)
                 int quality = assessFingerprintQuality(rawData, width, height);
                 logger.info("Attempt #{} - Image quality score: {}", attemptCount, quality);
                 
-                if (quality < 15) { // Minimum quality threshold
+                // Handle negative quality (no finger detected) - following MOSAIC behavior
+                if (quality < 0) {
+                    logger.warn("Attempt #{} - No finger detected, retrying...", attemptCount);
+                    try {
+                        Thread.sleep(200); // Longer delay for finger placement
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        break;
+                    }
+                    continue;
+                }
+                
+                // Following Java demo: quality < 10 means finger placement issue
+                if (quality < 10) {
                     logger.warn("Attempt #{} - Image quality too low ({}), retrying...", attemptCount, quality);
                     try {
                         Thread.sleep(100);
@@ -872,32 +895,21 @@ public class FingerprintDeviceService {
                 // CORRECTED: Use FPSPLIT_INFO structure constants for proper memory allocation (like C# sample)
                 int size = FPSPLIT_INFO.getStructureSize(); // 28 bytes on x64
                 int maxFingerprints = 10; // Maximum fingerprints supported by FPSPLIT
-                
-                // CRITICAL: Add extra padding to ensure we don't exceed bounds
-                // The C# sample shows offset can go up to (9 * 28 + 24) = 276, but we're seeing 284
-                // This suggests the actual structure might be larger or there's alignment padding
-                int totalMemoryNeeded = size * maxFingerprints + 32; // Add extra padding for safety
-                Pointer infosPtr = new Memory(totalMemoryNeeded); // Allocate space for structures
-                logger.debug("Allocated {} bytes (base: {}, padding: 32) for {} structures of {} bytes each", totalMemoryNeeded, size * maxFingerprints, maxFingerprints, size);
+                Pointer infosPtr = new Memory(size * maxFingerprints); // Allocate space for structures
+                logger.debug("Allocated {} bytes for {} structures of {} bytes each", size * maxFingerprints, maxFingerprints, size);
                 
                 // CORRECTED: Use FPSPLIT_INFO constants for correct offset calculation (like C# sample)
                 // Prepare memory for each fingerprint's output buffer (following C# sample pattern exactly)
                 for (int i = 0; i < maxFingerprints; i++) {
                     // Calculate offset to pOutBuf field within each structure (like C#: i * size + 24)
                     int pOutBufOffset = i * size + FPSPLIT_INFO.getPOutBufOffset();
-                    logger.debug("Structure {}: pOutBufOffset = {} * {} + {} = {}, totalMemory = {}", i, i, size, FPSPLIT_INFO.getPOutBufOffset(), pOutBufOffset, totalMemoryNeeded);
+                    logger.debug("Structure {}: pOutBufOffset = {} * {} + {} = {}", i, i, size, FPSPLIT_INFO.getPOutBufOffset(), pOutBufOffset);
                     
                     // Allocate memory for this fingerprint's image data
                     Pointer p = new Memory(splitWidth * splitHeight);
                     
                     // Write the pointer address to the structure (like C# Marshal.WriteIntPtr(ptr, p))
-                    try {
-                        infosPtr.setPointer(pOutBufOffset, p);
-                        logger.debug("Successfully set pointer for structure {} at offset {}", i, pOutBufOffset);
-                    } catch (IndexOutOfBoundsException e) {
-                        logger.error("BOUNDS ERROR: Structure {}, offset {}, totalMemory {}, error: {}", i, pOutBufOffset, totalMemoryNeeded, e.getMessage());
-                        throw e;
-                    }
+                    infosPtr.setPointer(pOutBufOffset, p);
                 }
                 
                 // Perform the splitting (CORRECTED - using IntByReference like C# ref int)
@@ -1198,8 +1210,8 @@ public class FingerprintDeviceService {
                             int ret = ID_FprCapLoad.ID_FprCapinterface.instance.LIVESCAN_GetFPRawData(channel, data);
                             
                             if (ret == 1) {
-                                // Check quality (like C# sample MOSAIC_FingerQuality)
-                                int quality = assessFingerprintQuality(data, width, height);
+                                // Check quality using MOSAIC for live preview (like C# sample MOSAIC_FingerQuality)
+                                int quality = assessFingerprintQuality(data, width, height, false);
                                 
                                 // Process and store the frame (like C# sample ShowPreview)
                                 Map<String, Object> frameData = processPreviewFrame(data, width, height, quality);
@@ -1696,9 +1708,17 @@ public class FingerprintDeviceService {
                 // We need to resize/convert the image data
                 byte[] standardImageData = convertImageToStandardFormat(imageData, width, height);
                 
-                // Check image quality using the improved quality assessment
-                int quality = assessFingerprintQuality(imageData, width, height);
-                logger.info("Fingerprint image quality: {}", quality);
+                // Check image quality using ZAZ_FpStdLib for template generation (like Java demo)
+                int quality = assessFingerprintQuality(imageData, width, height, true);
+                logger.info("Fingerprint image quality for template generation: {}", quality);
+                
+                // Following Java demo: quality < 50 is acceptable for template generation
+                if (quality < 0) {
+                    return Map.of(
+                        "success", false,
+                        "error_details", "No finger detected. Please place finger properly on scanner."
+                    );
+                }
                 
                 if (quality < 10) {
                     return Map.of(
@@ -2077,7 +2097,7 @@ public class FingerprintDeviceService {
                 if (GamcLoad.instance.MOSAIC_IsSupportFingerQuality() == 1) {
                     int mosaicQuality = GamcLoad.instance.MOSAIC_FingerQuality(rawData, width, height);
                     results.put("mosaic_quality", mosaicQuality);
-                    results.put("mosaic_quality_message", mosaicQuality < 0 ? "Bad quality" : getQualityMessage(mosaicQuality));
+                    results.put("mosaic_quality_message", getQualityMessage(mosaicQuality));
                 } else {
                     results.put("mosaic_quality", "Not supported");
                 }
