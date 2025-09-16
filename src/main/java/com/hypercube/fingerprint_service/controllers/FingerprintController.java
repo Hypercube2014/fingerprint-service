@@ -415,7 +415,6 @@ public class FingerprintController {
      * Split Four Right Fingers - Extract right hand four fingers (index, middle, ring, little) from a single image
      * This endpoint captures an image containing all four right fingers and automatically splits them
      * Following C# sample pattern for type 2 (right four fingers)
-     * CORRECTED: Using proper split dimensions 256x360 for four fingers (not 300x400 which is for single/thumbs)
      */
     @PostMapping("/split/four-right")
     public ResponseEntity<Map<String, Object>> splitFourRightFingers(

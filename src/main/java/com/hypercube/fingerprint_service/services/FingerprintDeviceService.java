@@ -677,7 +677,10 @@ public class FingerprintDeviceService {
                     // CORRECTED: Use FPSPLIT_INFO structure constants for proper memory allocation (like C# sample)
                     int size = FPSPLIT_INFO.getStructureSize(); // 28 bytes on x64
                     int maxFingerprints = 10; // Maximum fingerprints supported by FPSPLIT
-                    Pointer infosPtr = new Memory(size * maxFingerprints); // Allocate space for structures
+                    // FIXED: Allocate extra space for the last pointer field to prevent bounds errors
+                    // Last structure's pOutBuf is at offset (9 * 28 + 24) = 276, needs 8 bytes -> 284 total
+                    int totalMemoryNeeded = size * maxFingerprints + 8; // Extra 8 bytes for safety
+                    Pointer infosPtr = new Memory(totalMemoryNeeded); // Allocate space for structures
                     logger.debug("Allocated {} bytes for {} structures of {} bytes each", size * maxFingerprints, maxFingerprints, size);
                     
                     // CORRECTED: Use FPSPLIT_INFO constants for correct offset calculation (like C# sample)
@@ -686,6 +689,12 @@ public class FingerprintDeviceService {
                         // Calculate offset to pOutBuf field within each structure (like C#: i * size + 24)
                         int pOutBufOffset = i * size + FPSPLIT_INFO.getPOutBufOffset();
                         logger.debug("Structure {}: pOutBufOffset = {} * {} + {} = {}", i, i, size, FPSPLIT_INFO.getPOutBufOffset(), pOutBufOffset);
+                        
+                        // Validate offset is within bounds before setting pointer
+                        if (pOutBufOffset + 8 > totalMemoryNeeded) { // 8 bytes for pointer on x64
+                            logger.error("Calculated pOutBufOffset {} exceeds allocated memory size {}", pOutBufOffset + 8, totalMemoryNeeded);
+                            throw new RuntimeException("Memory offset calculation error: pOutBufOffset=" + pOutBufOffset + ", totalSize=" + totalMemoryNeeded);
+                        }
                         
                         // Allocate memory for this fingerprint's image data
                         Pointer p = new Memory(splitWidth * splitHeight);
@@ -949,7 +958,10 @@ public class FingerprintDeviceService {
                 // CORRECTED: Use FPSPLIT_INFO structure constants for proper memory allocation (like C# sample)
                 int size = FPSPLIT_INFO.getStructureSize(); // 28 bytes on x64
                 int maxFingerprints = 10; // Maximum fingerprints supported by FPSPLIT
-                Pointer infosPtr = new Memory(size * maxFingerprints); // Allocate space for structures
+                // FIXED: Allocate extra space for the last pointer field to prevent bounds errors
+                // Last structure's pOutBuf is at offset (9 * 28 + 24) = 276, needs 8 bytes -> 284 total
+                int totalMemoryNeeded = size * maxFingerprints + 8; // Extra 8 bytes for safety
+                Pointer infosPtr = new Memory(totalMemoryNeeded); // Allocate space for structures
                 logger.debug("Allocated {} bytes for {} structures of {} bytes each", size * maxFingerprints, maxFingerprints, size);
                 
                 // CORRECTED: Use FPSPLIT_INFO constants for correct offset calculation (like C# sample)
@@ -958,6 +970,12 @@ public class FingerprintDeviceService {
                     // Calculate offset to pOutBuf field within each structure (like C#: i * size + 24)
                     int pOutBufOffset = i * size + FPSPLIT_INFO.getPOutBufOffset();
                     logger.debug("Structure {}: pOutBufOffset = {} * {} + {} = {}", i, i, size, FPSPLIT_INFO.getPOutBufOffset(), pOutBufOffset);
+                    
+                    // Validate offset is within bounds before setting pointer
+                    if (pOutBufOffset + 8 > totalMemoryNeeded) { // 8 bytes for pointer on x64
+                        logger.error("Calculated pOutBufOffset {} exceeds allocated memory size {}", pOutBufOffset + 8, totalMemoryNeeded);
+                        throw new RuntimeException("Memory offset calculation error: pOutBufOffset=" + pOutBufOffset + ", totalSize=" + totalMemoryNeeded);
+                    }
                     
                     // Allocate memory for this fingerprint's image data
                     Pointer p = new Memory(splitWidth * splitHeight);
@@ -1110,7 +1128,7 @@ public class FingerprintDeviceService {
                 finger.put("filename", storageResult.getFilename());
                 finger.put("file_path", storageResult.getFilePath());
                 finger.put("file_size", storageResult.getFileSize());
-                // NOTE: Raw image data removed from response as requested - no "image" field with Base64 data
+                finger.put("image", Base64.getEncoder().encodeToString(fingerData));
                 
                 logger.info("Successfully processed and stored {} at position {}", fingerName, position);
                 return finger;
