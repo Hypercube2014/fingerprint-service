@@ -2,22 +2,23 @@ package com.hypercube.fingerprint_service.sdk;
 
 import com.sun.jna.Structure;
 import com.sun.jna.Pointer;
+import java.util.Arrays;
+import java.util.List;
 
 /**
  * FPSPLIT_INFO structure definition matching the C# implementation
  * This structure is used by the FpSplit.dll library for fingerprint splitting operations
  * 
- * Structure layout (x64):
+ * Structure layout (matches C# FPSPLIT_INFO exactly):
  * - int x (4 bytes)
  * - int y (4 bytes) 
  * - int top (4 bytes)
  * - int left (4 bytes)
  * - int angle (4 bytes)
  * - int quality (4 bytes)
- * - Pointer pOutBuf (8 bytes on x64)
+ * - Pointer pOutBuf (8 bytes on x64, 4 bytes on x86)
  * 
- * Total size: 28 bytes on x64 architecture (matching C# Marshal.SizeOf)
- * pOutBuf pointer offset: 24 bytes
+ * JNA automatically handles platform-specific alignment and sizing
  */
 public class FPSPLIT_INFO extends Structure {
     
@@ -29,28 +30,16 @@ public class FPSPLIT_INFO extends Structure {
     public int quality;     // Quality score
     public Pointer pOutBuf; // Output buffer pointer
     
-    /**
-     * Get the size of the FPSPLIT_INFO structure
-     * @return structure size in bytes
-     */
-    public static int getStructureSize() {
-        return 28; // 28 bytes on x64 architecture (matching C# Marshal.SizeOf)
+    public FPSPLIT_INFO() {
+        super();
     }
     
     /**
-     * Get the offset of the pOutBuf pointer within the structure
-     * @return offset in bytes
+     * Required by JNA - defines the order of fields in the structure
+     * This MUST match the C# struct field order exactly
      */
-    public static int getPOutBufOffset() {
-        return 24; // 24 bytes offset for pOutBuf pointer
-    }
-    
-    /**
-     * Calculate the memory offset for a specific FPSPLIT_INFO instance
-     * @param index the index of the FPSPLIT_INFO instance (0-based)
-     * @return memory offset in bytes
-     */
-    public static int getMemoryOffset(int index) {
-        return index * getStructureSize() + getPOutBufOffset();
+    @Override
+    protected List<String> getFieldOrder() {
+        return Arrays.asList("x", "y", "top", "left", "angle", "quality", "pOutBuf");
     }
 }

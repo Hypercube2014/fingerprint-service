@@ -674,25 +674,23 @@ public class FingerprintDeviceService {
                     // IMPORTANT: C# sample does NOT call FPSPLIT_Init() - it directly calls FPSPLIT_DoSplit()
                     logger.debug("Preparing split buffers and performing FPSPLIT_DoSplit");
                     
-                    // CORRECTED: Use FPSPLIT_INFO structure constants for proper memory allocation (like C# sample)
-                    int size = FPSPLIT_INFO.getStructureSize(); // 28 bytes on x64
+                    // CORRECTED: Use JNA Structure array for proper memory management (like C# sample)
                     int maxFingerprints = 10; // Maximum fingerprints supported by FPSPLIT
-                    Pointer infosPtr = new Memory(size * maxFingerprints); // Allocate space for structures
-                    logger.debug("Allocated {} bytes for {} structures of {} bytes each", size * maxFingerprints, maxFingerprints, size);
+                    FPSPLIT_INFO[] infoStructs = new FPSPLIT_INFO[maxFingerprints];
                     
-                    // CORRECTED: Use FPSPLIT_INFO constants for correct offset calculation (like C# sample)
-                    // Prepare memory for each fingerprint's output buffer (following C# sample pattern exactly)
+                    // Initialize each structure and allocate memory for image buffers (following C# pattern)
                     for (int i = 0; i < maxFingerprints; i++) {
-                        // Calculate offset to pOutBuf field within each structure (like C#: i * size + 24)
-                        int pOutBufOffset = i * size + FPSPLIT_INFO.getPOutBufOffset();
-                        logger.debug("Structure {}: pOutBufOffset = {} * {} + {} = {}", i, i, size, FPSPLIT_INFO.getPOutBufOffset(), pOutBufOffset);
-                        
-                        // Allocate memory for this fingerprint's image data
-                        Pointer p = new Memory(splitWidth * splitHeight);
-                        
-                        // Write the pointer address to the structure (like C# Marshal.WriteIntPtr(ptr, p))
-                        infosPtr.setPointer(pOutBufOffset, p);
+                        infoStructs[i] = new FPSPLIT_INFO();
+                        // Allocate memory for this fingerprint's image data (like C# Marshal.AllocHGlobal)
+                        infoStructs[i].pOutBuf = new Memory(splitWidth * splitHeight);
+                        logger.debug("Structure {}: allocated {} bytes for image buffer", i, splitWidth * splitHeight);
                     }
+                    
+                    // Create structure array for passing to native function
+                    FPSPLIT_INFO firstStruct = infoStructs[0];
+                    Pointer infosPtr = firstStruct.getPointer();
+                    int structSize = firstStruct.size();
+                    logger.debug("Using JNA structure array: first struct at {}, size {} bytes each", infosPtr, structSize);
                     
                     // Perform the splitting (CORRECTED - using IntByReference like C# ref int)
                     logger.info("Attempt #{} - Calling FPSPLIT_DoSplit with image size: {}x{}, split size: {}x{}", attemptCount, width, height, splitWidth, splitHeight);
@@ -722,13 +720,13 @@ public class FingerprintDeviceService {
                         List<Map<String, Object>> thumbs = new ArrayList<>();
                         
                         // Extract left thumb (position 0)
-                        Map<String, Object> leftThumb = processSplitThumb(infosPtr, 0, "left_thumb", splitWidth, splitHeight);
+                        Map<String, Object> leftThumb = processSplitThumbFromStruct(infoStructs[0], 0, "left_thumb", splitWidth, splitHeight);
                         if (leftThumb != null) {
                             thumbs.add(leftThumb);
                         }
                         
                         // Extract right thumb (position 1)
-                        Map<String, Object> rightThumb = processSplitThumb(infosPtr, 1, "right_thumb", splitWidth, splitHeight);
+                        Map<String, Object> rightThumb = processSplitThumbFromStruct(infoStructs[1], 1, "right_thumb", splitWidth, splitHeight);
                         if (rightThumb != null) {
                             thumbs.add(rightThumb);
                         }
@@ -736,9 +734,7 @@ public class FingerprintDeviceService {
                         // Step 7.5: Clean up allocated memory (like C# sample)
                         try {
                             for (int i = 0; i < maxFingerprints; i++) {
-                                int pOutBufOffset = i * size + FPSPLIT_INFO.getPOutBufOffset();
-                                Pointer pOutBuf = infosPtr.getPointer(pOutBufOffset);
-                                if (pOutBuf != null) {
+                                if (infoStructs[i] != null && infoStructs[i].pOutBuf != null) {
                                     // Memory will be garbage collected by JNA - no explicit free needed
                                     logger.debug("Memory cleanup for structure {} completed", i);
                                 }
@@ -946,25 +942,23 @@ public class FingerprintDeviceService {
                 // IMPORTANT: C# sample does NOT call FPSPLIT_Init() - it directly calls FPSPLIT_DoSplit()
                 logger.debug("Preparing split buffers and performing FPSPLIT_DoSplit");
                 
-                // CORRECTED: Use FPSPLIT_INFO structure constants for proper memory allocation (like C# sample)
-                int size = FPSPLIT_INFO.getStructureSize(); // 28 bytes on x64
+                // CORRECTED: Use JNA Structure array for proper memory management (like C# sample)
                 int maxFingerprints = 10; // Maximum fingerprints supported by FPSPLIT
-                Pointer infosPtr = new Memory(size * maxFingerprints); // Allocate space for structures
-                logger.debug("Allocated {} bytes for {} structures of {} bytes each", size * maxFingerprints, maxFingerprints, size);
+                FPSPLIT_INFO[] infoStructs = new FPSPLIT_INFO[maxFingerprints];
                 
-                // CORRECTED: Use FPSPLIT_INFO constants for correct offset calculation (like C# sample)
-                // Prepare memory for each fingerprint's output buffer (following C# sample pattern exactly)
+                // Initialize each structure and allocate memory for image buffers (following C# pattern)
                 for (int i = 0; i < maxFingerprints; i++) {
-                    // Calculate offset to pOutBuf field within each structure (like C#: i * size + 24)
-                    int pOutBufOffset = i * size + FPSPLIT_INFO.getPOutBufOffset();
-                    logger.debug("Structure {}: pOutBufOffset = {} * {} + {} = {}", i, i, size, FPSPLIT_INFO.getPOutBufOffset(), pOutBufOffset);
-                    
-                    // Allocate memory for this fingerprint's image data
-                    Pointer p = new Memory(splitWidth * splitHeight);
-                    
-                    // Write the pointer address to the structure (like C# Marshal.WriteIntPtr(ptr, p))
-                    infosPtr.setPointer(pOutBufOffset, p);
+                    infoStructs[i] = new FPSPLIT_INFO();
+                    // Allocate memory for this fingerprint's image data (like C# Marshal.AllocHGlobal)
+                    infoStructs[i].pOutBuf = new Memory(splitWidth * splitHeight);
+                    logger.debug("Structure {}: allocated {} bytes for image buffer", i, splitWidth * splitHeight);
                 }
+                
+                // Create structure array for passing to native function
+                FPSPLIT_INFO firstStruct = infoStructs[0];
+                Pointer infosPtr = firstStruct.getPointer();
+                int structSize = firstStruct.size();
+                logger.debug("Using JNA structure array: first struct at {}, size {} bytes each", infosPtr, structSize);
                 
                 // Perform the splitting (CORRECTED - using IntByReference like C# ref int)
                 logger.info("Attempt #{} - Calling FPSPLIT_DoSplit with image size: {}x{}, split size: {}x{}", attemptCount, width, height, splitWidth, splitHeight);
@@ -996,7 +990,7 @@ public class FingerprintDeviceService {
                     // Process each finger (right hand: index, middle, ring, little)
                     String[] fingerNames = {"right_index", "right_middle", "right_ring", "right_little"};
                     for (int i = 0; i < fpNum; i++) {
-                        Map<String, Object> finger = processSplitFinger(infosPtr, i, fingerNames[i], splitWidth, splitHeight);
+                        Map<String, Object> finger = processSplitFingerFromStruct(infoStructs[i], i, fingerNames[i], splitWidth, splitHeight);
                         if (finger != null) {
                             fingers.add(finger);
                         }
@@ -1005,9 +999,7 @@ public class FingerprintDeviceService {
                     // Step 7.5: Clean up allocated memory (like C# sample)
                     try {
                         for (int i = 0; i < maxFingerprints; i++) {
-                            int pOutBufOffset = i * size + FPSPLIT_INFO.getPOutBufOffset();
-                            Pointer pOutBuf = infosPtr.getPointer(pOutBufOffset);
-                            if (pOutBuf != null) {
+                            if (infoStructs[i] != null && infoStructs[i].pOutBuf != null) {
                                 // Memory will be garbage collected by JNA - no explicit free needed
                                 logger.debug("Memory cleanup for structure {} completed", i);
                             }
@@ -1084,13 +1076,59 @@ public class FingerprintDeviceService {
     }
     
     /**
-     * Process a split finger result and store it as an image
+     * Process a split finger result and store it as an image (using JNA Structure)
+     */
+    private Map<String, Object> processSplitFingerFromStruct(FPSPLIT_INFO infoStruct, int position, String fingerName, int splitWidth, int splitHeight) {
+        try {
+            // Read the actual data directly from the structure's pOutBuf pointer
+            byte[] fingerData = infoStruct.pOutBuf.getByteArray(0, splitWidth * splitHeight);
+            
+            // Store the finger as a PNG image
+            String customName = String.format("%s_position_%d", fingerName, position);
+            FingerprintFileStorageService.FileStorageResult storageResult = 
+                fileStorageService.storeFingerprintImageAsImageOrganized(fingerData, "split", customName, splitWidth, splitHeight);
+            
+            if (storageResult.isSuccess()) {
+                Map<String, Object> finger = new HashMap<>();
+                finger.put("finger_name", fingerName);
+                finger.put("position", position);
+                finger.put("x", infoStruct.x);
+                finger.put("y", infoStruct.y);
+                finger.put("top", infoStruct.top);
+                finger.put("left", infoStruct.left);
+                finger.put("angle", infoStruct.angle);
+                finger.put("quality", infoStruct.quality);
+                finger.put("width", splitWidth);
+                finger.put("height", splitHeight);
+                finger.put("filename", storageResult.getFilename());
+                finger.put("file_path", storageResult.getFilePath());
+                finger.put("file_size", storageResult.getFileSize());
+                finger.put("image", Base64.getEncoder().encodeToString(fingerData));
+                
+                logger.info("Successfully processed and stored {} at position {} (x:{}, y:{}, quality:{})", 
+                    fingerName, position, infoStruct.x, infoStruct.y, infoStruct.quality);
+                return finger;
+            } else {
+                logger.warn("Failed to store finger {}: {}", fingerName, storageResult.getMessage());
+                return null;
+            }
+            
+        } catch (Exception e) {
+            logger.error("Error processing finger {}: {}", fingerName, e.getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * Process a split finger result and store it as an image (legacy method for backward compatibility)
      */
     private Map<String, Object> processSplitFinger(Pointer infosPtr, int position, String fingerName, int splitWidth, int splitHeight) {
         try {
             // CORRECTED: Follow C# pattern exactly - first get the pOutBuf pointer, then read from it
             // Step 1: Calculate offset to the pOutBuf pointer within the structure
-            int pOutBufOffset = position * FPSPLIT_INFO.getStructureSize() + FPSPLIT_INFO.getPOutBufOffset();
+            FPSPLIT_INFO tempStruct = new FPSPLIT_INFO();
+            int structSize = tempStruct.size();
+            int pOutBufOffset = position * structSize + 24; // pOutBuf is at offset 24 in the structure
             // Step 2: Read the pointer value (like C# Marshal.ReadIntPtr)
             Pointer pOutBufPtr = infosPtr.getPointer(pOutBufOffset);
             // Step 3: Read the actual data from that pointer (like C# Marshal.Copy)
@@ -1132,7 +1170,9 @@ public class FingerprintDeviceService {
         try {
             // CORRECTED: Follow C# pattern exactly - first get the pOutBuf pointer, then read from it
             // Step 1: Calculate offset to the pOutBuf pointer within the structure
-            int pOutBufOffset = position * FPSPLIT_INFO.getStructureSize() + FPSPLIT_INFO.getPOutBufOffset();
+            FPSPLIT_INFO tempStruct = new FPSPLIT_INFO();
+            int structSize = tempStruct.size();
+            int pOutBufOffset = position * structSize + 24; // pOutBuf is at offset 24 in the structure
             // Step 2: Read the pointer value (like C# Marshal.ReadIntPtr)
             Pointer pOutBufPtr = infosPtr.getPointer(pOutBufOffset);
             // Step 3: Read the actual data from that pointer (like C# Marshal.Copy)
@@ -1159,6 +1199,53 @@ public class FingerprintDeviceService {
                         "file_size", storageResult.getFileSize()
                     )
                 );
+            } else {
+                logger.warn("Failed to store thumb {}: {}", thumbName, storageResult.getMessage());
+                return null;
+            }
+            
+        } catch (Exception e) {
+            logger.error("Error processing thumb {}: {}", thumbName, e.getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * Process a split thumb result and store it as an image (using JNA Structure)
+     */
+    private Map<String, Object> processSplitThumbFromStruct(FPSPLIT_INFO infoStruct, int position, String thumbName, int splitWidth, int splitHeight) {
+        try {
+            // Read the actual data directly from the structure's pOutBuf pointer
+            byte[] thumbData = infoStruct.pOutBuf.getByteArray(0, splitWidth * splitHeight);
+            
+            // Store the thumb as a PNG image
+            String customName = String.format("%s_position_%d", thumbName, position);
+            FingerprintFileStorageService.FileStorageResult storageResult = 
+                fileStorageService.storeFingerprintImageAsImageOrganized(thumbData, "split", customName, splitWidth, splitHeight);
+            
+            if (storageResult.isSuccess()) {
+                logger.info("Thumb {} stored successfully: {} (x:{}, y:{}, quality:{})", 
+                    thumbName, storageResult.getFilePath(), infoStruct.x, infoStruct.y, infoStruct.quality);
+                
+                Map<String, Object> result = new HashMap<>();
+                result.put("thumb_name", thumbName);
+                result.put("position", position);
+                result.put("x", infoStruct.x);
+                result.put("y", infoStruct.y);
+                result.put("top", infoStruct.top);
+                result.put("left", infoStruct.left);
+                result.put("angle", infoStruct.angle);
+                result.put("quality", infoStruct.quality);
+                result.put("width", splitWidth);
+                result.put("height", splitHeight);
+                result.put("quality_score", infoStruct.quality); // Use actual quality from structure
+                result.put("storage_info", Map.of(
+                    "stored", storageResult.isSuccess(),
+                    "file_path", storageResult.getFilePath(),
+                    "filename", storageResult.getFilename(),
+                    "file_size", storageResult.getFileSize()
+                ));
+                return result;
             } else {
                 logger.warn("Failed to store thumb {}: {}", thumbName, storageResult.getMessage());
                 return null;
@@ -1547,12 +1634,13 @@ public class FingerprintDeviceService {
             int fpNum = 0;
             
             if (initRet == 1) {
-                int size = FPSPLIT_INFO.getStructureSize();
+                FPSPLIT_INFO tempStruct = new FPSPLIT_INFO();
+                int size = tempStruct.size();
                 Pointer infosPtr = new Memory(size * 10);
                 
                 for (int i = 0; i < 10; i++) {
                     // Calculate offset to pOutBuf field within each structure (like C#: i * size + 24)
-                    int pOutBufOffset = i * size + FPSPLIT_INFO.getPOutBufOffset();
+                    int pOutBufOffset = i * size + 24; // pOutBuf is at offset 24 in the structure
                     Pointer ptr = infosPtr.share(pOutBufOffset);
                     Pointer p = new Memory(300 * 400);
                     ptr.setPointer(0, p);
