@@ -188,125 +188,135 @@ public class FingerprintDeviceService {
     }
     
     /**
-     * Assess fingerprint quality using SDK methods (following demo implementations)
-     * Primary: MOSAIC_FingerQuality for live capture
-     * Secondary: ZAZ_FpStdLib_GetImageQuality for template generation
+     * Assess fingerprint quality using the most reliable method from working implementations
+     * Based on analysis of Sample Code (C#), Demojava, and other working implementations
      */
     private int assessFingerprintQuality(byte[] imageData, int width, int height) {
-        return assessFingerprintQuality(imageData, width, height, false);
-    }
-    
-    /**
-     * Assess fingerprint quality with option for template generation mode
-     * @param forTemplate true if assessing for template generation, false for live capture
-     */
-    private int assessFingerprintQuality(byte[] imageData, int width, int height, boolean forTemplate) {
         try {
-            // Method 1: Use MOSAIC quality assessment for live capture (like C# sample)
-            if (!forTemplate) {
-                try {
-                    if (GamcLoad.instance.MOSAIC_IsSupportFingerQuality() == 1) {
-                        int quality = GamcLoad.instance.MOSAIC_FingerQuality(imageData, width, height);
-                        logger.debug("MOSAIC quality assessment: {}", quality);
-                        
-                        // MOSAIC returns -1 for no finger or very bad quality (like C# sample)
-                        if (quality < 0) {
-                            logger.debug("MOSAIC indicates no finger detected or very bad quality");
-                            return -1; // Indicates retry needed
-                        }
-                        
-                        // Return quality score directly (MOSAIC already gives 0-100+ range)
-                        return quality;
+            // Primary Method: Use MOSAIC quality assessment (most reliable, matches C# sample)
+            // This is the same method used in the working C# Sample Code
+            try {
+                if (GamcLoad.instance.MOSAIC_IsSupportFingerQuality() == 1) {
+                    int quality = GamcLoad.instance.MOSAIC_FingerQuality(imageData, width, height);
+                    logger.debug("MOSAIC quality assessment: {}", quality);
+                    
+                    // Handle MOSAIC return values correctly:
+                    // -1 = bad quality (no finger detected or very poor quality)
+                    // 0+ = quality score (higher is better)
+                    if (quality < 0) {
+                        logger.debug("MOSAIC detected no finger or very poor quality");
+                        return 0; // No finger detected
                     }
-                } catch (Exception e) {
-                    logger.debug("MOSAIC quality assessment failed: {}", e.getMessage());
+                    
+                    // MOSAIC typically returns 0-100, but can go higher
+                    // Normalize to 0-100 scale for consistency
+                    return Math.min(100, Math.max(0, quality));
+                } else {
+                    logger.debug("MOSAIC quality assessment not supported");
                 }
+            } catch (Exception e) {
+                logger.debug("MOSAIC quality assessment failed: {}", e.getMessage());
             }
             
-            // Method 2: Use ZAZ_FpStdLib quality assessment for template generation (like Java demo)
+            // Secondary Method: ZAZ_FpStdLib quality assessment (for standard 256x360 images)
+            // This matches the Demojava implementation approach
             try {
-                long deviceHandle = ZAZ_FpStdLib.INSTANCE.ZAZ_FpStdLib_OpenDevice();
-                if (deviceHandle != 0) {
-                    try {
-                        // For ZAZ_FpStdLib, we need standard format (256x360 for single finger)
-                        byte[] standardImage;
-                        if (width == 256 && height == 360) {
-                            standardImage = imageData;
-                        } else {
-                            standardImage = convertImageToStandardFormat(imageData, width, height);
+                // Only use this for standard fingerprint template sizes
+                if (width == 256 && height == 360 && imageData.length == width * height) {
+                    long deviceHandle = ZAZ_FpStdLib.INSTANCE.ZAZ_FpStdLib_OpenDevice();
+                    if (deviceHandle != 0) {
+                        try {
+                            int quality = ZAZ_FpStdLib.INSTANCE.ZAZ_FpStdLib_GetImageQuality(deviceHandle, imageData);
+                            logger.debug("ZAZ_FpStdLib quality assessment: {}", quality);
+                            
+                            // ZAZ_FpStdLib returns quality scores where:
+                            // Higher values = better quality
+                            // Typical range is 0-100+
+                            return Math.min(100, Math.max(0, quality));
+                        } finally {
+                            ZAZ_FpStdLib.INSTANCE.ZAZ_FpStdLib_CloseDevice(deviceHandle);
                         }
-                        
-                        int quality = ZAZ_FpStdLib.INSTANCE.ZAZ_FpStdLib_GetImageQuality(deviceHandle, standardImage);
-                        logger.debug("ZAZ_FpStdLib quality assessment: {}", quality);
-                        return quality;
-                    } finally {
-                        ZAZ_FpStdLib.INSTANCE.ZAZ_FpStdLib_CloseDevice(deviceHandle);
                     }
                 }
             } catch (Exception e) {
                 logger.debug("ZAZ_FpStdLib quality assessment failed: {}", e.getMessage());
             }
             
-            // Method 3: Fallback to basic quality assessment
-            int basicQuality = calculateBasicQuality(imageData, width, height);
-            logger.debug("Basic quality assessment: {}", basicQuality);
-            return basicQuality;
+            // Fallback Method: Enhanced basic quality assessment
+            // Only used when SDK methods are unavailable
+            logger.debug("Using fallback basic quality assessment");
+            return calculateEnhancedBasicQuality(imageData, width, height);
             
         } catch (Exception e) {
             logger.warn("Error assessing fingerprint quality, using default score: {}", e.getMessage());
-            // Return default quality score
-            return 30;
+            return 25; // Conservative default - better to be cautious
         }
     }
     
     /**
-     * Basic quality assessment algorithm for 16-bit image data
+     * Enhanced basic quality assessment algorithm
+     * Used as fallback when SDK methods are unavailable
+     * Improved based on analysis of working implementations
      */
-    private int calculateBasicQuality(byte[] imageData, int width, int height) {
+    private int calculateEnhancedBasicQuality(byte[] imageData, int width, int height) {
         if (imageData == null || imageData.length == 0) {
             return 0;
         }
 
-        // Data is already 8-bit, use directly
-        byte[] eightBitData = imageData;
-        
         // Calculate average intensity
         long totalIntensity = 0;
-        for (byte b : eightBitData) {
+        for (byte b : imageData) {
             totalIntensity += (b & 0xFF);
         }
-        double avgIntensity = (double) totalIntensity / eightBitData.length;
+        double avgIntensity = (double) totalIntensity / imageData.length;
 
-        // Calculate standard deviation
+        // Calculate standard deviation (contrast measure)
         double variance = 0;
-        for (byte b : eightBitData) {
+        for (byte b : imageData) {
             double diff = (b & 0xFF) - avgIntensity;
             variance += diff * diff;
         }
-        variance /= eightBitData.length;
+        variance /= imageData.length;
         double stdDev = Math.sqrt(variance);
 
-        // Quality score based on contrast and brightness
+        // Enhanced quality scoring based on working implementations
         int quality = 0;
         
-        // Good contrast (high std dev) increases quality
-        if (stdDev > 30) quality += 30;
-        else if (stdDev > 20) quality += 20;
-        else if (stdDev > 10) quality += 10;
+        // Contrast analysis (most important factor)
+        if (stdDev > 40) quality += 35;      // Excellent contrast
+        else if (stdDev > 30) quality += 25; // Good contrast  
+        else if (stdDev > 20) quality += 15; // Fair contrast
+        else if (stdDev > 10) quality += 5;  // Poor contrast
         
-        // Good brightness (not too dark, not too bright) increases quality
-        if (avgIntensity > 50 && avgIntensity < 200) quality += 40;
-        else if (avgIntensity > 30 && avgIntensity < 220) quality += 20;
+        // Brightness analysis (optimal range for fingerprints)
+        if (avgIntensity >= 80 && avgIntensity <= 180) quality += 25; // Optimal brightness
+        else if (avgIntensity >= 60 && avgIntensity <= 200) quality += 15; // Good brightness
+        else if (avgIntensity >= 40 && avgIntensity <= 220) quality += 10; // Acceptable brightness
         
-        // Check for non-zero pixels (fingerprint presence)
+        // Fingerprint presence analysis
         int nonZeroPixels = 0;
-        for (byte b : eightBitData) {
-            if ((b & 0xFF) > 0) nonZeroPixels++;
+        int midRangePixels = 0; // Pixels in typical fingerprint intensity range
+        for (byte b : imageData) {
+            int intensity = b & 0xFF;
+            if (intensity > 0) nonZeroPixels++;
+            if (intensity >= 50 && intensity <= 200) midRangePixels++;
         }
-        double coverage = (double) nonZeroPixels / eightBitData.length;
         
-        if (coverage > 0.3 && coverage < 0.8) quality += 30;
-        else if (coverage > 0.1 && coverage < 0.9) quality += 15;
+        double coverage = (double) nonZeroPixels / imageData.length;
+        double fingerCoverage = (double) midRangePixels / imageData.length;
+        
+        // Coverage scoring (finger should cover reasonable portion of image)
+        if (coverage > 0.4 && coverage < 0.9) quality += 20;
+        else if (coverage > 0.2 && coverage < 0.95) quality += 10;
+        
+        // Fingerprint-specific intensity distribution
+        if (fingerCoverage > 0.3 && fingerCoverage < 0.8) quality += 20;
+        else if (fingerCoverage > 0.1 && fingerCoverage < 0.9) quality += 10;
+
+        // Ensure reasonable minimum score for images that have some content
+        if (quality < 10 && coverage > 0.1 && stdDev > 5) {
+            quality = 15; // Give some credit for having image content
+        }
 
         return Math.min(100, Math.max(0, quality));
     }
@@ -370,17 +380,20 @@ public class FingerprintDeviceService {
     }
     
     /**
-     * Get quality message based on quality score (following Java demo implementation)
+     * Get quality message based on quality score (following demo implementations)
+     * Updated thresholds based on analysis of working C# and Java implementations
      */
     private String getQualityMessage(int quality) {
-        if (quality < 0) {
-            return "No finger detected - please place finger properly on scanner";
-        } else if (quality < 10) {
+        if (quality < 10) {
             return "Please place finger properly on scanner";
+        } else if (quality < 20) {
+            return "Image captured successfully, but quality is very low - may not be suitable for templates";
+        } else if (quality < 30) {
+            return "Image captured successfully, quality is low but may be usable";
         } else if (quality < 50) {
-            return "Image captured successfully, quality = " + quality;
+            return "Image captured successfully, quality is acceptable";
         } else {
-            return "Image quality is good, ready for template generation (quality = " + quality + ")";
+            return "Image quality is good, ready for template generation";
         }
     }
     
@@ -575,24 +588,11 @@ public class FingerprintDeviceService {
                     }
                     
                     logger.info("Attempt #{} - Image captured successfully, checking quality...", attemptCount);
-                    // CORRECTED: Add quality check before split (following demo implementations)
+                    // CORRECTED: Add quality check before split (like C# sample)
                     int quality = assessFingerprintQuality(rawData, width, height);
                     logger.info("Attempt #{} - Image quality score: {}", attemptCount, quality);
                     
-                    // Handle negative quality (no finger detected) - following MOSAIC behavior
-                    if (quality < 0) {
-                        logger.warn("Attempt #{} - No finger detected, retrying...", attemptCount);
-                        try {
-                            Thread.sleep(200); // Longer delay for finger placement
-                        } catch (InterruptedException e) {
-                            Thread.currentThread().interrupt();
-                            break;
-                        }
-                        continue;
-                    }
-                    
-                    // Following Java demo: quality < 10 means finger placement issue
-                    if (quality < 10) {
+                    if (quality < 20) {
                         logger.warn("Attempt #{} - Image quality too low ({}), retrying...", attemptCount, quality);
                         try {
                             Thread.sleep(100); // Small delay before retry
@@ -858,24 +858,11 @@ public class FingerprintDeviceService {
                 
                 logger.info("Attempt #{} - Image captured successfully, checking quality...", attemptCount);
                 
-                // Check image quality (following demo implementations)
+                // Check image quality
                 int quality = assessFingerprintQuality(rawData, width, height);
                 logger.info("Attempt #{} - Image quality score: {}", attemptCount, quality);
                 
-                // Handle negative quality (no finger detected) - following MOSAIC behavior
-                if (quality < 0) {
-                    logger.warn("Attempt #{} - No finger detected, retrying...", attemptCount);
-                    try {
-                        Thread.sleep(200); // Longer delay for finger placement
-                    } catch (InterruptedException e) {
-                        Thread.currentThread().interrupt();
-                        break;
-                    }
-                    continue;
-                }
-                
-                // Following Java demo: quality < 10 means finger placement issue
-                if (quality < 10) {
+                if (quality < 20) { // Minimum quality threshold - matches C# sample code
                     logger.warn("Attempt #{} - Image quality too low ({}), retrying...", attemptCount, quality);
                     try {
                         Thread.sleep(100);
@@ -1210,8 +1197,8 @@ public class FingerprintDeviceService {
                             int ret = ID_FprCapLoad.ID_FprCapinterface.instance.LIVESCAN_GetFPRawData(channel, data);
                             
                             if (ret == 1) {
-                                // Check quality using MOSAIC for live preview (like C# sample MOSAIC_FingerQuality)
-                                int quality = assessFingerprintQuality(data, width, height, false);
+                                // Check quality (like C# sample MOSAIC_FingerQuality)
+                                int quality = assessFingerprintQuality(data, width, height);
                                 
                                 // Process and store the frame (like C# sample ShowPreview)
                                 Map<String, Object> frameData = processPreviewFrame(data, width, height, quality);
@@ -1708,19 +1695,11 @@ public class FingerprintDeviceService {
                 // We need to resize/convert the image data
                 byte[] standardImageData = convertImageToStandardFormat(imageData, width, height);
                 
-                // Check image quality using ZAZ_FpStdLib for template generation (like Java demo)
-                int quality = assessFingerprintQuality(imageData, width, height, true);
-                logger.info("Fingerprint image quality for template generation: {}", quality);
+                // Check image quality using the improved quality assessment
+                int quality = assessFingerprintQuality(imageData, width, height);
+                logger.info("Fingerprint image quality: {}", quality);
                 
-                // Following Java demo: quality < 50 is acceptable for template generation
-                if (quality < 0) {
-                    return Map.of(
-                        "success", false,
-                        "error_details", "No finger detected. Please place finger properly on scanner."
-                    );
-                }
-                
-                if (quality < 10) {
+                if (quality < 20) {
                     return Map.of(
                         "success", false,
                         "error_details", "Image quality too low: " + quality + ". Please place finger properly on scanner."
@@ -2097,7 +2076,7 @@ public class FingerprintDeviceService {
                 if (GamcLoad.instance.MOSAIC_IsSupportFingerQuality() == 1) {
                     int mosaicQuality = GamcLoad.instance.MOSAIC_FingerQuality(rawData, width, height);
                     results.put("mosaic_quality", mosaicQuality);
-                    results.put("mosaic_quality_message", getQualityMessage(mosaicQuality));
+                    results.put("mosaic_quality_message", mosaicQuality < 0 ? "Bad quality" : getQualityMessage(mosaicQuality));
                 } else {
                     results.put("mosaic_quality", "Not supported");
                 }
@@ -2107,7 +2086,7 @@ public class FingerprintDeviceService {
             
             // Method 3: Basic quality assessment
             try {
-                int basicQuality = calculateBasicQuality(rawData, width, height);
+                int basicQuality = calculateEnhancedBasicQuality(rawData, width, height);
                 results.put("basic_quality", basicQuality);
                 results.put("basic_quality_message", getQualityMessage(basicQuality));
             } catch (Exception e) {
