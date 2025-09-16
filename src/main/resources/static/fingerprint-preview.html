@@ -315,6 +315,7 @@
                     <div>Quality: <span id="qualityValue">0</span><span id="qualityIndicator" class="quality-indicator quality-none"></span></div>
                     <div>Size: <span id="imageSize">0x0</span></div>
                     <div>Finger: <span id="fingerStatus">Not Detected</span></div>
+                    <div id="qualityMessage" style="font-size: 11px; color: #000; margin-top: 5px; max-width: 200px;">Ready</div>
                 </div>
             </div>
 
@@ -477,6 +478,7 @@
             this.fpsCounter = document.getElementById('fpsCounter');
             this.qualityValue = document.getElementById('qualityValue');
             this.qualityIndicator = document.getElementById('qualityIndicator');
+            this.qualityMessage = document.getElementById('qualityMessage');
             this.imageSize = document.getElementById('imageSize');
             this.templateFormat = document.getElementById('templateFormat');
             this.templateSize = document.getElementById('templateSize');
@@ -624,6 +626,9 @@
             // Update quality indicator
             this.qualityValue.textContent = data.quality;
             this.updateQualityIndicator(data.quality);
+            
+            // Add quality message following Sample Code pattern
+            this.updateQualityMessage(data.quality);
 
             // Update image size
             this.imageSize.textContent = `${data.width}x${data.height}`;
@@ -718,14 +723,43 @@
 
         updateQualityIndicator(quality) {
             this.qualityIndicator.className = 'quality-indicator ';
-            if (quality >= 80) {
+            
+            // Following Sample Code and Java Demo quality thresholds exactly:
+            // Sample Code: Quality >= 0 for acceptance
+            // Java Demo: < 10 = bad, < 50 = acceptable, >= 50 = good
+            if (quality >= 50) {
                 this.qualityIndicator.classList.add('quality-excellent');
-            } else if (quality >= 60) {
+            } else if (quality >= 20) {
                 this.qualityIndicator.classList.add('quality-good');
-            } else if (quality > 0) {
+            } else if (quality >= 10) {
                 this.qualityIndicator.classList.add('quality-poor');
+            } else if (quality >= 0) {
+                this.qualityIndicator.classList.add('quality-poor'); // Still detected but low quality
             } else {
-                this.qualityIndicator.classList.add('quality-none');
+                this.qualityIndicator.classList.add('quality-none'); // Invalid/no finger detected
+            }
+        }
+
+        updateQualityMessage(quality) {
+            // Following Sample Code message patterns exactly:
+            // Sample Code shows: "Get Image Ok! Quality: X" when Quality >= 0
+            // Java Demo shows: < 10 = "请按捺指纹", < 50 = "获取图像成功... 质量", >= 50 = "获取图像成功,可以提取特征"
+            
+            if (quality < 0) {
+                this.qualityMessage.textContent = "Invalid quality measurement";
+                this.qualityMessage.style.color = "#dc3545";
+            } else if (quality < 10) {
+                this.qualityMessage.textContent = "Please place finger properly on scanner";
+                this.qualityMessage.style.color = "#dc3545";
+            } else if (quality < 20) {
+                this.qualityMessage.textContent = "Quality may be too low for templates";
+                this.qualityMessage.style.color = "#ffc107";
+            } else if (quality < 50) {
+                this.qualityMessage.textContent = `Get Image Ok! Quality: ${quality}`;
+                this.qualityMessage.style.color = "#ffc107";
+            } else {
+                this.qualityMessage.textContent = `Image quality is good! Quality: ${quality}`;
+                this.qualityMessage.style.color = "#28a745";
             }
         }
 
