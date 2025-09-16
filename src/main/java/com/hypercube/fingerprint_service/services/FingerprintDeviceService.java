@@ -601,9 +601,11 @@ public class FingerprintDeviceService {
                         int pOutBufOffset = i * size + FPSPLIT_INFO.getPOutBufOffset();
                         logger.debug("Structure {}: pOutBufOffset = {} * {} + {} = {}", i, i, size, FPSPLIT_INFO.getPOutBufOffset(), pOutBufOffset);
                         
-                        Pointer ptr = infosPtr.share(pOutBufOffset);
+                        // Allocate memory for this fingerprint's image data
                         Pointer p = new Memory(splitWidth * splitHeight);
-                        ptr.setPointer(0, p);
+                        
+                        // Write the pointer address to the structure (like C# Marshal.WriteIntPtr(ptr, p))
+                        infosPtr.setPointer(pOutBufOffset, p);
                     }
                     
                     // Perform the splitting (CORRECTED - using IntByReference like C# ref int)
@@ -643,6 +645,20 @@ public class FingerprintDeviceService {
                         Map<String, Object> rightThumb = processSplitThumb(infosPtr, 1, "right_thumb", splitWidth, splitHeight);
                         if (rightThumb != null) {
                             thumbs.add(rightThumb);
+                        }
+                        
+                        // Step 7.5: Clean up allocated memory (like C# sample)
+                        try {
+                            for (int i = 0; i < maxFingerprints; i++) {
+                                int pOutBufOffset = i * size + FPSPLIT_INFO.getPOutBufOffset();
+                                Pointer pOutBuf = infosPtr.getPointer(pOutBufOffset);
+                                if (pOutBuf != null) {
+                                    // Memory will be garbage collected by JNA - no explicit free needed
+                                    logger.debug("Memory cleanup for structure {} completed", i);
+                                }
+                            }
+                        } catch (Exception e) {
+                            logger.warn("Error during memory cleanup: {}", e.getMessage());
                         }
                         
                         // Step 8: Play success sound and set success LED
@@ -855,9 +871,11 @@ public class FingerprintDeviceService {
                     int pOutBufOffset = i * size + FPSPLIT_INFO.getPOutBufOffset();
                     logger.debug("Structure {}: pOutBufOffset = {} * {} + {} = {}", i, i, size, FPSPLIT_INFO.getPOutBufOffset(), pOutBufOffset);
                     
-                    Pointer ptr = infosPtr.share(pOutBufOffset);
+                    // Allocate memory for this fingerprint's image data
                     Pointer p = new Memory(splitWidth * splitHeight);
-                    ptr.setPointer(0, p);
+                    
+                    // Write the pointer address to the structure (like C# Marshal.WriteIntPtr(ptr, p))
+                    infosPtr.setPointer(pOutBufOffset, p);
                 }
                 
                 // Perform the splitting (CORRECTED - using IntByReference like C# ref int)
@@ -894,6 +912,20 @@ public class FingerprintDeviceService {
                         if (finger != null) {
                             fingers.add(finger);
                         }
+                    }
+                    
+                    // Step 7.5: Clean up allocated memory (like C# sample)
+                    try {
+                        for (int i = 0; i < maxFingerprints; i++) {
+                            int pOutBufOffset = i * size + FPSPLIT_INFO.getPOutBufOffset();
+                            Pointer pOutBuf = infosPtr.getPointer(pOutBufOffset);
+                            if (pOutBuf != null) {
+                                // Memory will be garbage collected by JNA - no explicit free needed
+                                logger.debug("Memory cleanup for structure {} completed", i);
+                            }
+                        }
+                    } catch (Exception e) {
+                        logger.warn("Error during memory cleanup: {}", e.getMessage());
                     }
                     
                     // Step 8: Play success sound and set success LED
@@ -972,7 +1004,7 @@ public class FingerprintDeviceService {
             // Step 1: Calculate offset to the pOutBuf pointer within the structure
             int pOutBufOffset = position * FPSPLIT_INFO.getStructureSize() + FPSPLIT_INFO.getPOutBufOffset();
             // Step 2: Read the pointer value (like C# Marshal.ReadIntPtr)
-            Pointer pOutBufPtr = infosPtr.share(pOutBufOffset).getPointer(0);
+            Pointer pOutBufPtr = infosPtr.getPointer(pOutBufOffset);
             // Step 3: Read the actual data from that pointer (like C# Marshal.Copy)
             byte[] fingerData = pOutBufPtr.getByteArray(0, splitWidth * splitHeight);
             
@@ -1014,7 +1046,7 @@ public class FingerprintDeviceService {
             // Step 1: Calculate offset to the pOutBuf pointer within the structure
             int pOutBufOffset = position * FPSPLIT_INFO.getStructureSize() + FPSPLIT_INFO.getPOutBufOffset();
             // Step 2: Read the pointer value (like C# Marshal.ReadIntPtr)
-            Pointer pOutBufPtr = infosPtr.share(pOutBufOffset).getPointer(0);
+            Pointer pOutBufPtr = infosPtr.getPointer(pOutBufOffset);
             // Step 3: Read the actual data from that pointer (like C# Marshal.Copy)
             byte[] thumbData = pOutBufPtr.getByteArray(0, splitWidth * splitHeight);
             
