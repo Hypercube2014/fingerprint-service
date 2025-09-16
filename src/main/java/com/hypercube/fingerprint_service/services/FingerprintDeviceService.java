@@ -112,6 +112,13 @@ public class FingerprintDeviceService {
                 );
             }
             
+            // CRITICAL: Set capture window (like C# sample) - this was missing!
+            logger.info("Setting capture window to {}x{}", width, height);
+            int windowRet = ID_FprCapLoad.ID_FprCapinterface.instance.LIVESCAN_SetCaptWindow(0, 0, 0, width, height);
+            if (windowRet != 1) {
+                logger.warn("Failed to set capture window, return code: {}", windowRet);
+            }
+            
             // Begin capture
             int ret = ID_FprCapLoad.ID_FprCapinterface.instance.LIVESCAN_BeginCapture(channel);
             if (ret != 1) {
