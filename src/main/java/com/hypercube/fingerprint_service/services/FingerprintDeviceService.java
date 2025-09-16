@@ -2477,20 +2477,6 @@ public class FingerprintDeviceService {
     }
     
     /**
-     * Assess fingerprint quality using MOSAIC library
-     * This method uses the same quality assessment as the C# sample
-     */
-    private int assessFingerprintQuality(byte[] rawData, int width, int height) {
-        try {
-            // Use GamcLoad to assess quality (like C# sample MOSAIC_FingerQuality)
-            return GamcLoad.instance.MOSAIC_FingerQuality(rawData, width, height);
-        } catch (Exception e) {
-            logger.warn("Error assessing fingerprint quality: {}", e.getMessage());
-            return -1; // Return -1 on error (no finger detected)
-        }
-    }
-    
-    /**
      * Debug FPSPLIT functionality with detailed diagnostics
      * This method tests FPSPLIT_DoSplit with various configurations and provides detailed analysis
      */
