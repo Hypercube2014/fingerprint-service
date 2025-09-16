@@ -675,32 +675,23 @@ public class FingerprintDeviceService {
                     logger.debug("Preparing split buffers and performing FPSPLIT_DoSplit");
                     
                     // CORRECTED: Use FPSPLIT_INFO structure constants for proper memory allocation (like C# sample)
-                    int size = FPSPLIT_INFO.getStructureSize(); // Use JNA's actual size calculation
-                    int pOutBufOffset = FPSPLIT_INFO.getPOutBufOffset(); // Use JNA's actual offset calculation
+                    int size = FPSPLIT_INFO.getStructureSize(); // 28 bytes on x64
                     int maxFingerprints = 10; // Maximum fingerprints supported by FPSPLIT
-                    
-                    // CRITICAL DEBUG: Log actual structure layout
-                    logger.info("STRUCTURE DEBUG - JNA calculated size: {}, pOutBuf offset: {}", size, pOutBufOffset);
-                    logger.info("STRUCTURE DEBUG - C# expected size: 28, C# expected offset: 24");
-                    logger.info("STRUCTURE DEBUG - Max offset will be: {} (structure 9: {} * {} + {} = {})", 
-                        (maxFingerprints - 1) * size + pOutBufOffset, 
-                        (maxFingerprints - 1), size, pOutBufOffset, (maxFingerprints - 1) * size + pOutBufOffset);
-                    
                     Pointer infosPtr = new Memory(size * maxFingerprints); // Allocate space for structures
-                    logger.info("MEMORY DEBUG - Allocated {} bytes for {} structures", size * maxFingerprints, maxFingerprints);
+                    logger.debug("Allocated {} bytes for {} structures of {} bytes each", size * maxFingerprints, maxFingerprints, size);
                     
                     // CORRECTED: Use FPSPLIT_INFO constants for correct offset calculation (like C# sample)
                     // Prepare memory for each fingerprint's output buffer (following C# sample pattern exactly)
                     for (int i = 0; i < maxFingerprints; i++) {
                         // Calculate offset to pOutBuf field within each structure (like C#: i * size + 24)
-                        int structureOffset = i * size + pOutBufOffset;
-                        logger.debug("Structure {}: structureOffset = {} * {} + {} = {}", i, i, size, pOutBufOffset, structureOffset);
+                        int pOutBufOffset = i * size + FPSPLIT_INFO.getPOutBufOffset();
+                        logger.debug("Structure {}: pOutBufOffset = {} * {} + {} = {}", i, i, size, FPSPLIT_INFO.getPOutBufOffset(), pOutBufOffset);
                         
                         // Allocate memory for this fingerprint's image data
                         Pointer p = new Memory(splitWidth * splitHeight);
                         
                         // Write the pointer address to the structure (like C# Marshal.WriteIntPtr(ptr, p))
-                        infosPtr.setPointer(structureOffset, p);
+                        infosPtr.setPointer(pOutBufOffset, p);
                     }
                     
                     // Perform the splitting (CORRECTED - using IntByReference like C# ref int)
@@ -745,8 +736,8 @@ public class FingerprintDeviceService {
                         // Step 7.5: Clean up allocated memory (like C# sample)
                         try {
                             for (int i = 0; i < maxFingerprints; i++) {
-                                int structureOffset = i * size + pOutBufOffset;
-                                Pointer pOutBuf = infosPtr.getPointer(structureOffset);
+                                int pOutBufOffset = i * size + FPSPLIT_INFO.getPOutBufOffset();
+                                Pointer pOutBuf = infosPtr.getPointer(pOutBufOffset);
                                 if (pOutBuf != null) {
                                     // Memory will be garbage collected by JNA - no explicit free needed
                                     logger.debug("Memory cleanup for structure {} completed", i);
@@ -956,32 +947,23 @@ public class FingerprintDeviceService {
                 logger.debug("Preparing split buffers and performing FPSPLIT_DoSplit");
                 
                 // CORRECTED: Use FPSPLIT_INFO structure constants for proper memory allocation (like C# sample)
-                int size = FPSPLIT_INFO.getStructureSize(); // Use JNA's actual size calculation
-                int pOutBufOffset = FPSPLIT_INFO.getPOutBufOffset(); // Use JNA's actual offset calculation
+                int size = FPSPLIT_INFO.getStructureSize(); // 28 bytes on x64
                 int maxFingerprints = 10; // Maximum fingerprints supported by FPSPLIT
-                
-                // CRITICAL DEBUG: Log actual structure layout
-                logger.info("STRUCTURE DEBUG - JNA calculated size: {}, pOutBuf offset: {}", size, pOutBufOffset);
-                logger.info("STRUCTURE DEBUG - C# expected size: 28, C# expected offset: 24");
-                logger.info("STRUCTURE DEBUG - Max offset will be: {} (structure 9: {} * {} + {} = {})", 
-                    (maxFingerprints - 1) * size + pOutBufOffset, 
-                    (maxFingerprints - 1), size, pOutBufOffset, (maxFingerprints - 1) * size + pOutBufOffset);
-                
                 Pointer infosPtr = new Memory(size * maxFingerprints); // Allocate space for structures
-                logger.info("MEMORY DEBUG - Allocated {} bytes for {} structures", size * maxFingerprints, maxFingerprints);
+                logger.debug("Allocated {} bytes for {} structures of {} bytes each", size * maxFingerprints, maxFingerprints, size);
                 
                 // CORRECTED: Use FPSPLIT_INFO constants for correct offset calculation (like C# sample)
                 // Prepare memory for each fingerprint's output buffer (following C# sample pattern exactly)
                 for (int i = 0; i < maxFingerprints; i++) {
                     // Calculate offset to pOutBuf field within each structure (like C#: i * size + 24)
-                    int structureOffset = i * size + pOutBufOffset;
-                    logger.debug("Structure {}: structureOffset = {} * {} + {} = {}", i, i, size, pOutBufOffset, structureOffset);
+                    int pOutBufOffset = i * size + FPSPLIT_INFO.getPOutBufOffset();
+                    logger.debug("Structure {}: pOutBufOffset = {} * {} + {} = {}", i, i, size, FPSPLIT_INFO.getPOutBufOffset(), pOutBufOffset);
                     
                     // Allocate memory for this fingerprint's image data
                     Pointer p = new Memory(splitWidth * splitHeight);
                     
                     // Write the pointer address to the structure (like C# Marshal.WriteIntPtr(ptr, p))
-                    infosPtr.setPointer(structureOffset, p);
+                    infosPtr.setPointer(pOutBufOffset, p);
                 }
                 
                 // Perform the splitting (CORRECTED - using IntByReference like C# ref int)
@@ -1023,8 +1005,8 @@ public class FingerprintDeviceService {
                     // Step 7.5: Clean up allocated memory (like C# sample)
                     try {
                         for (int i = 0; i < maxFingerprints; i++) {
-                            int structureOffset = i * size + pOutBufOffset;
-                            Pointer pOutBuf = infosPtr.getPointer(structureOffset);
+                            int pOutBufOffset = i * size + FPSPLIT_INFO.getPOutBufOffset();
+                            Pointer pOutBuf = infosPtr.getPointer(pOutBufOffset);
                             if (pOutBuf != null) {
                                 // Memory will be garbage collected by JNA - no explicit free needed
                                 logger.debug("Memory cleanup for structure {} completed", i);
