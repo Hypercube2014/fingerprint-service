@@ -122,8 +122,9 @@ public class FingerprintDeviceService {
                 );
             }
             
-            // Get fingerprint data (CORRECTED - using 1 byte per pixel, the actual format)
-            byte[] rawData = new byte[width * height]; // 1 byte per pixel for 8-bit grayscale
+            // Get fingerprint data (CORRECTED - following C# sample buffer allocation exactly)
+            // C# sample uses: byte[] data = new byte[w * h * 2]; - CRITICAL for memory safety
+            byte[] rawData = new byte[width * height * 2]; // Following C# sample exactly
             ret = ID_FprCapLoad.ID_FprCapinterface.instance.LIVESCAN_GetFPRawData(channel, rawData);
             
             if (ret != 1) {
@@ -622,8 +623,9 @@ public class FingerprintDeviceService {
             try {
                 // Step 5: Continuous capture loop like C# sample (CORRECTED - using 2 bytes per pixel like C# sample)
                 logger.info("Step 5: Starting continuous capture loop with green thumb indicators active");
-                // CORRECTED: Use 1 byte per pixel (8-bit grayscale) - the actual format
-                byte[] rawData = new byte[width * height];
+                // CORRECTED: Following C# sample buffer allocation exactly
+                // C# sample uses: byte[] data = new byte[w * h * 2]; - CRITICAL for memory safety
+                byte[] rawData = new byte[width * height * 2];
                 
                 long startTime = System.currentTimeMillis();
                 long timeout = 10000; // 10 seconds timeout like C# sample
@@ -904,8 +906,9 @@ public class FingerprintDeviceService {
                 
                 logger.info("Attempt #{} (elapsed: {}ms) - Capturing fingerprint image...", attemptCount, elapsed);
                 
-                // Capture fingerprint image (CORRECTED - using 1 byte per pixel, the actual format)
-                byte[] rawData = new byte[width * height];
+                // Capture fingerprint image (CORRECTED - following C# sample buffer allocation exactly)
+                // C# sample uses: byte[] data = new byte[w * h * 2]; - CRITICAL for memory safety
+                byte[] rawData = new byte[width * height * 2];
                 int captureRet = ID_FprCapLoad.ID_FprCapinterface.instance.LIVESCAN_GetFPRawData(channel, rawData);
                 
                 if (captureRet != 1) {
@@ -1251,7 +1254,9 @@ public class FingerprintDeviceService {
                 logger.info("Preview thread started for channel: {} (following C# sample pattern)", channel);
                 
                 try {
-                    byte[] data = new byte[width * height]; // CORRECTED: 1 byte per pixel, the actual format
+                    // CORRECTED: Following C# sample buffer allocation exactly
+                    // C# sample uses: byte[] data = new byte[w * h * 2]; - CRITICAL for memory safety
+                    byte[] data = new byte[width * height * 2];
                     long lastFrameTime = System.currentTimeMillis();
                     int frameCount = 0;
                     
@@ -1517,8 +1522,9 @@ public class FingerprintDeviceService {
             int ledRet = ID_FprCapLoad.ID_FprCapinterface.instance.LIVESCAN_SetLedLight(4);
             logger.info("Set LED result: {}", ledRet);
             
-            // Capture image
-            byte[] rawData = new byte[width * height]; // 1 byte per pixel
+            // Capture image (CORRECTED - following C# sample buffer allocation exactly)
+            // C# sample uses: byte[] data = new byte[w * h * 2]; - CRITICAL for memory safety
+            byte[] rawData = new byte[width * height * 2];
             int captureRet = ID_FprCapLoad.ID_FprCapinterface.instance.LIVESCAN_GetFPRawData(channel, rawData);
             logger.info("Capture result: {}", captureRet);
             
@@ -2098,8 +2104,9 @@ public class FingerprintDeviceService {
                 );
             }
             
-            // Capture a test image
-            byte[] rawData = new byte[width * height];
+            // Capture a test image (CORRECTED - following C# sample buffer allocation exactly)
+            // C# sample uses: byte[] data = new byte[w * h * 2]; - CRITICAL for memory safety
+            byte[] rawData = new byte[width * height * 2];
             int captureRet = ID_FprCapLoad.ID_FprCapinterface.instance.LIVESCAN_GetFPRawData(channel, rawData);
             
             if (captureRet != 1) {
