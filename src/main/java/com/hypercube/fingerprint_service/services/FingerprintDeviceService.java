@@ -17,6 +17,8 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.ArrayList;
 import java.util.Date;
 import java.util.List;
+import java.util.Optional;
+import java.util.stream.Collectors;
 import java.text.SimpleDateFormat;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -1024,13 +1026,20 @@ public class FingerprintDeviceService {
                 
                 // Perform the splitting (CORRECTED - using IntByReference like C# ref int)
                 logger.info("Attempt #{} - Calling FPSPLIT_DoSplit with image size: {}x{}, split size: {}x{}", attemptCount, width, height, splitWidth, splitHeight);
+                logger.debug("Attempt #{} - Raw data buffer size: {} bytes, expected: {} bytes", attemptCount, rawData.length, width * height * 2);
+                logger.debug("Attempt #{} - Memory structures allocated: {} structures, {} bytes each, total: {} bytes", 
+                           attemptCount, maxFingerprints, size, totalMemoryNeeded);
+                
                 IntByReference fpNumRef = new IntByReference(0);
+                long splitStartTime = System.nanoTime();
                 int ret = FpSplitLoad.instance.FPSPLIT_DoSplit(
                     rawData, width, height, 1, splitWidth, splitHeight, fpNumRef, infosPtr
                 );
+                long splitDuration = (System.nanoTime() - splitStartTime) / 1_000_000; // Convert to milliseconds
                 
                 int fpNum = fpNumRef.getValue(); // Get the actual number of fingerprints found
-                logger.info("Attempt #{} - FPSPLIT_DoSplit returned: {}, fingerprints found: {}", attemptCount, ret, fpNum);
+                logger.info("Attempt #{} - FPSPLIT_DoSplit returned: {}, fingerprints found: {}, duration: {}ms", 
+                           attemptCount, ret, fpNum, splitDuration);
                 
                 // Add detailed diagnostics for FPSPLIT_DoSplit failures
                 if (ret == -1) {
@@ -2465,5 +2474,266 @@ public class FingerprintDeviceService {
         System.arraycopy(rawData, 0, bmpData, 1078, width * height);
         
         return bmpData;
+    }
+    
+    /**
+     * Assess fingerprint quality using MOSAIC library
+     * This method uses the same quality assessment as the C# sample
+     */
+    private int assessFingerprintQuality(byte[] rawData, int width, int height) {
+        try {
+            // Use GamcLoad to assess quality (like C# sample MOSAIC_FingerQuality)
+            return GamcLoad.instance.MOSAIC_FingerQuality(rawData, width, height);
+        } catch (Exception e) {
+            logger.warn("Error assessing fingerprint quality: {}", e.getMessage());
+            return -1; // Return -1 on error (no finger detected)
+        }
+    }
+    
+    /**
+     * Debug FPSPLIT functionality with detailed diagnostics
+     * This method tests FPSPLIT_DoSplit with various configurations and provides detailed analysis
+     */
+    public Map<String, Object> debugFpSplitTest(int channel, int width, int height, int splitWidth, int splitHeight, int maxAttempts) {
+        logger.info("=== FPSPLIT DEBUG TEST STARTING ===");
+        logger.info("Parameters: channel={}, image={}x{}, split={}x{}, maxAttempts={}", 
+                   channel, width, height, splitWidth, splitHeight, maxAttempts);
+        
+        try {
+            // Step 1: Test SDK availability
+            logger.info("Step 1: Testing SDK availability...");
+            if (!isWindows) {
+                return Map.of(
+                    "success", false,
+                    "error", "Platform not supported. This SDK requires Windows.",
+                    "step", "platform_check"
+                );
+            }
+            
+            // Step 2: Initialize device
+            logger.info("Step 2: Initializing device...");
+            int deviceRet = ID_FprCapLoad.ID_FprCapinterface.instance.LIVESCAN_Init();
+            if (deviceRet != 1) {
+                return Map.of(
+                    "success", false,
+                    "error", "Device initialization failed with return code: " + deviceRet,
+                    "step", "device_init"
+                );
+            }
+            
+            // Step 3: Test different split sizes
+            logger.info("Step 3: Testing multiple split size configurations...");
+            List<Map<String, Object>> testResults = new ArrayList<>();
+            
+            // Test configurations: C# sample sizes
+            int[][] testConfigs = {
+                {300, 400}, // C# four-finger capture (line 871)
+                {256, 360}, // C# template creation (line 546)
+                {splitWidth, splitHeight} // User-specified
+            };
+            
+            String[] configNames = {"C# Four-Finger", "C# Template", "User Specified"};
+            
+            for (int configIndex = 0; configIndex < testConfigs.length; configIndex++) {
+                int testSplitWidth = testConfigs[configIndex][0];
+                int testSplitHeight = testConfigs[configIndex][1];
+                String configName = configNames[configIndex];
+                
+                logger.info("Testing configuration: {} ({}x{})", configName, testSplitWidth, testSplitHeight);
+                
+                Map<String, Object> configResult = testSingleSplitConfiguration(
+                    channel, width, height, testSplitWidth, testSplitHeight, maxAttempts, configName);
+                testResults.add(configResult);
+                
+                // If we found a working configuration, break
+                if ((Boolean) configResult.get("success")) {
+                    logger.info("SUCCESS with configuration: {} ({}x{})", configName, testSplitWidth, testSplitHeight);
+                    break;
+                }
+            }
+            
+            // Step 4: Analyze results
+            logger.info("Step 4: Analyzing test results...");
+            Map<String, Object> analysis = analyzeTestResults(testResults);
+            
+            logger.info("=== FPSPLIT DEBUG TEST COMPLETED ===");
+            return Map.of(
+                "success", testResults.stream().anyMatch(r -> (Boolean) r.get("success")),
+                "test_results", testResults,
+                "analysis", analysis,
+                "recommendations", generateRecommendations(testResults),
+                "timestamp", System.currentTimeMillis()
+            );
+            
+        } catch (Exception e) {
+            logger.error("Error in FPSPLIT debug test: {}", e.getMessage(), e);
+            return Map.of(
+                "success", false,
+                "error", "Debug test failed: " + e.getMessage(),
+                "step", "exception"
+            );
+        }
+    }
+    
+    private Map<String, Object> testSingleSplitConfiguration(int channel, int width, int height, 
+                                                           int splitWidth, int splitHeight, int maxAttempts, String configName) {
+        logger.info("--- Testing {} configuration: {}x{} ---", configName, splitWidth, splitHeight);
+        
+        List<Map<String, Object>> attemptResults = new ArrayList<>();
+        
+        for (int attempt = 1; attempt <= maxAttempts; attempt++) {
+            logger.info("Attempt {}/{} for {}", attempt, maxAttempts, configName);
+            
+            try {
+                // Capture image
+                byte[] rawData = new byte[width * height * 2];
+                int captureRet = ID_FprCapLoad.ID_FprCapinterface.instance.LIVESCAN_GetFPRawData(channel, rawData);
+                
+                if (captureRet != 1) {
+                    attemptResults.add(Map.of(
+                        "attempt", attempt,
+                        "capture_success", false,
+                        "capture_return_code", captureRet,
+                        "error", "Image capture failed"
+                    ));
+                    continue;
+                }
+                
+                // Check quality
+                int quality = assessFingerprintQuality(rawData, width, height);
+                logger.info("Attempt {} quality: {}", attempt, quality);
+                
+                // Test FPSPLIT_DoSplit
+                Map<String, Object> splitResult = testFpSplitCall(rawData, width, height, splitWidth, splitHeight);
+                
+                Map<String, Object> attemptResult = new HashMap<>();
+                attemptResult.put("attempt", attempt);
+                attemptResult.put("capture_success", true);
+                attemptResult.put("quality", quality);
+                attemptResult.put("split_result", splitResult);
+                
+                attemptResults.add(attemptResult);
+                
+                // If split was successful, we can stop testing this configuration
+                if ((Boolean) splitResult.get("success")) {
+                    logger.info("Configuration {} succeeded on attempt {}", configName, attempt);
+                    break;
+                }
+                
+            } catch (Exception e) {
+                logger.error("Error in attempt {} for {}: {}", attempt, configName, e.getMessage());
+                attemptResults.add(Map.of(
+                    "attempt", attempt,
+                    "error", e.getMessage()
+                ));
+            }
+        }
+        
+        boolean configSuccess = attemptResults.stream()
+            .anyMatch(r -> r.containsKey("split_result") && 
+                          (Boolean) ((Map<String, Object>) r.get("split_result")).get("success"));
+        
+        return Map.of(
+            "config_name", configName,
+            "split_size", splitWidth + "x" + splitHeight,
+            "success", configSuccess,
+            "attempts", attemptResults
+        );
+    }
+    
+    private Map<String, Object> testFpSplitCall(byte[] rawData, int width, int height, int splitWidth, int splitHeight) {
+        try {
+            // Prepare memory structures (same as main implementation)
+            int size = FPSPLIT_INFO.getStructureSize();
+            int maxFingerprints = 10;
+            int totalMemoryNeeded = size * maxFingerprints + 8;
+            Pointer infosPtr = new Memory(totalMemoryNeeded);
+            
+            for (int i = 0; i < maxFingerprints; i++) {
+                int pOutBufOffset = i * size + FPSPLIT_INFO.getPOutBufOffset();
+                Pointer p = new Memory(splitWidth * splitHeight);
+                infosPtr.setPointer(pOutBufOffset, p);
+            }
+            
+            // Call FPSPLIT_DoSplit
+            IntByReference fpNumRef = new IntByReference(0);
+            long startTime = System.nanoTime();
+            int ret = FpSplitLoad.instance.FPSPLIT_DoSplit(
+                rawData, width, height, 1, splitWidth, splitHeight, fpNumRef, infosPtr
+            );
+            long duration = (System.nanoTime() - startTime) / 1_000_000;
+            
+            int fpNum = fpNumRef.getValue();
+            
+            return Map.of(
+                "success", fpNum > 0,
+                "return_code", ret,
+                "fingerprints_found", fpNum,
+                "duration_ms", duration,
+                "split_size", splitWidth + "x" + splitHeight
+            );
+            
+        } catch (Exception e) {
+            return Map.of(
+                "success", false,
+                "error", e.getMessage()
+            );
+        }
+    }
+    
+    private Map<String, Object> analyzeTestResults(List<Map<String, Object>> testResults) {
+        Map<String, Object> analysis = new HashMap<>();
+        
+        // Count successes and failures
+        long successCount = testResults.stream().mapToLong(r -> (Boolean) r.get("success") ? 1 : 0).sum();
+        analysis.put("successful_configs", successCount);
+        analysis.put("total_configs", testResults.size());
+        
+        // Find working configurations
+        List<String> workingConfigs = testResults.stream()
+            .filter(r -> (Boolean) r.get("success"))
+            .map(r -> (String) r.get("config_name") + " (" + r.get("split_size") + ")")
+            .collect(Collectors.toList());
+        analysis.put("working_configurations", workingConfigs);
+        
+        // Analyze common issues
+        List<String> commonIssues = new ArrayList<>();
+        if (successCount == 0) {
+            commonIssues.add("No configurations worked - likely hardware or finger placement issue");
+        }
+        if (testResults.stream().anyMatch(r -> r.get("config_name").equals("C# Four-Finger") && !(Boolean) r.get("success"))) {
+            commonIssues.add("C# Four-Finger config (300x400) failed - check finger placement");
+        }
+        analysis.put("common_issues", commonIssues);
+        
+        return analysis;
+    }
+    
+    private List<String> generateRecommendations(List<Map<String, Object>> testResults) {
+        List<String> recommendations = new ArrayList<>();
+        
+        boolean anySuccess = testResults.stream().anyMatch(r -> (Boolean) r.get("success"));
+        
+        if (!anySuccess) {
+            recommendations.add("1. Check that all four right fingers are placed clearly on the scanner");
+            recommendations.add("2. Ensure proper contact pressure - not too light, not too heavy");
+            recommendations.add("3. Clean the scanner surface");
+            recommendations.add("4. Try different finger placement positions");
+            recommendations.add("5. Check scanner hardware connection and calibration");
+        } else {
+            // Find the working configuration
+            Optional<Map<String, Object>> workingConfig = testResults.stream()
+                .filter(r -> (Boolean) r.get("success"))
+                .findFirst();
+            
+            if (workingConfig.isPresent()) {
+                String configName = (String) workingConfig.get().get("config_name");
+                String splitSize = (String) workingConfig.get().get("split_size");
+                recommendations.add("SUCCESS: Configuration '" + configName + "' (" + splitSize + ") works!");
+                recommendations.add("Use this configuration for consistent results");
+            }
+        }
+        
+        return recommendations;
     }
 }
