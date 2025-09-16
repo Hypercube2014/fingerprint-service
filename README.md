@@ -28,7 +28,7 @@ A Spring Boot service for capturing and processing fingerprint images using the 
 
 ### Fingerprint Splitting
 - `POST /api/fingerprint/split/thumbs?channel=0&width=1600&height=1500&splitWidth=300&splitHeight=400` - Split two thumb fingerprints (left and right) from a single image
-- `POST /api/fingerprint/split/four-right?channel=0&width=1600&height=1500&splitWidth=256&splitHeight=360` - Split four right hand fingers (index, middle, ring, little) from a single image
+- `POST /api/fingerprint/split/four-right?channel=0&width=1600&height=1500&splitWidth=300&splitHeight=400` - Split four right hand fingers (index, middle, ring, little) from a single image
 
 ### Testing and Diagnostics
 - `GET /api/fingerprint/test/fpsplit` - Test FPSPLIT library initialization with different dimensions
