@@ -596,16 +596,27 @@ public class FingerprintDeviceService {
                     
                     // CORRECTED: Use FPSPLIT_INFO constants for correct offset calculation (like C# sample)
                     // Prepare memory for each fingerprint's output buffer (following C# sample pattern exactly)
+                    int totalAllocatedBytes = size * maxFingerprints;
+                    logger.info("Memory allocation: {} structures × {} bytes = {} total bytes", maxFingerprints, size, totalAllocatedBytes);
+                    
                     for (int i = 0; i < maxFingerprints; i++) {
                         // Calculate offset to pOutBuf field within each structure (like C#: i * size + 24)
                         int pOutBufOffset = i * size + FPSPLIT_INFO.getPOutBufOffset();
-                        logger.debug("Structure {}: pOutBufOffset = {} * {} + {} = {}", i, i, size, FPSPLIT_INFO.getPOutBufOffset(), pOutBufOffset);
+                        
+                        // DEFENSIVE: Check bounds before accessing memory
+                        if (pOutBufOffset >= totalAllocatedBytes) {
+                            logger.error("BOUNDS ERROR: Structure {} offset {} exceeds allocated memory {}", i, pOutBufOffset, totalAllocatedBytes);
+                            throw new IllegalArgumentException("Memory bounds exceeded for structure " + i + ": offset " + pOutBufOffset + " >= allocated " + totalAllocatedBytes);
+                        }
+                        
+                        logger.debug("Structure {}: pOutBufOffset = {} * {} + {} = {} (within bounds: {})", i, i, size, FPSPLIT_INFO.getPOutBufOffset(), pOutBufOffset, totalAllocatedBytes);
                         
                         // Allocate memory for this fingerprint's image data
                         Pointer p = new Memory(splitWidth * splitHeight);
                         
                         // Write the pointer address to the structure (like C# Marshal.WriteIntPtr(ptr, p))
                         infosPtr.setPointer(pOutBufOffset, p);
+                        logger.debug("Structure {}: Successfully set pointer at offset {}", i, pOutBufOffset);
                     }
                     
                     // Perform the splitting (CORRECTED - using IntByReference like C# ref int)
@@ -866,16 +877,27 @@ public class FingerprintDeviceService {
                 
                 // CORRECTED: Use FPSPLIT_INFO constants for correct offset calculation (like C# sample)
                 // Prepare memory for each fingerprint's output buffer (following C# sample pattern exactly)
+                int totalAllocatedBytes = size * maxFingerprints;
+                logger.info("Memory allocation: {} structures × {} bytes = {} total bytes", maxFingerprints, size, totalAllocatedBytes);
+                
                 for (int i = 0; i < maxFingerprints; i++) {
                     // Calculate offset to pOutBuf field within each structure (like C#: i * size + 24)
                     int pOutBufOffset = i * size + FPSPLIT_INFO.getPOutBufOffset();
-                    logger.debug("Structure {}: pOutBufOffset = {} * {} + {} = {}", i, i, size, FPSPLIT_INFO.getPOutBufOffset(), pOutBufOffset);
+                    
+                    // DEFENSIVE: Check bounds before accessing memory
+                    if (pOutBufOffset >= totalAllocatedBytes) {
+                        logger.error("BOUNDS ERROR: Structure {} offset {} exceeds allocated memory {}", i, pOutBufOffset, totalAllocatedBytes);
+                        throw new IllegalArgumentException("Memory bounds exceeded for structure " + i + ": offset " + pOutBufOffset + " >= allocated " + totalAllocatedBytes);
+                    }
+                    
+                    logger.debug("Structure {}: pOutBufOffset = {} * {} + {} = {} (within bounds: {})", i, i, size, FPSPLIT_INFO.getPOutBufOffset(), pOutBufOffset, totalAllocatedBytes);
                     
                     // Allocate memory for this fingerprint's image data
                     Pointer p = new Memory(splitWidth * splitHeight);
                     
                     // Write the pointer address to the structure (like C# Marshal.WriteIntPtr(ptr, p))
                     infosPtr.setPointer(pOutBufOffset, p);
+                    logger.debug("Structure {}: Successfully set pointer at offset {}", i, pOutBufOffset);
                 }
                 
                 // Perform the splitting (CORRECTED - using IntByReference like C# ref int)
