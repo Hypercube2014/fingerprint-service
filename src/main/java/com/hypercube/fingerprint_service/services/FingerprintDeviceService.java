@@ -675,7 +675,7 @@ public class FingerprintDeviceService {
                     logger.debug("Preparing split buffers and performing FPSPLIT_DoSplit");
                     
                     // CORRECTED: Use FPSPLIT_INFO structure constants for proper memory allocation (like C# sample)
-                    int size = FPSPLIT_INFO.getStructureSize(); // 28 bytes on x64
+                    int size = FPSPLIT_INFO.getStructureSize(); // 32 bytes on x64 (6 ints + 1 pointer)
                     int maxFingerprints = 10; // Maximum fingerprints supported by FPSPLIT
                     Pointer infosPtr = new Memory(size * maxFingerprints); // Allocate space for structures
                     logger.debug("Allocated {} bytes for {} structures of {} bytes each", size * maxFingerprints, maxFingerprints, size);
@@ -947,7 +947,7 @@ public class FingerprintDeviceService {
                 logger.debug("Preparing split buffers and performing FPSPLIT_DoSplit");
                 
                 // CORRECTED: Use FPSPLIT_INFO structure constants for proper memory allocation (like C# sample)
-                int size = FPSPLIT_INFO.getStructureSize(); // 28 bytes on x64
+                int size = FPSPLIT_INFO.getStructureSize(); // 32 bytes on x64 (6 ints + 1 pointer)
                 int maxFingerprints = 10; // Maximum fingerprints supported by FPSPLIT
                 Pointer infosPtr = new Memory(size * maxFingerprints); // Allocate space for structures
                 logger.debug("Allocated {} bytes for {} structures of {} bytes each", size * maxFingerprints, maxFingerprints, size);
