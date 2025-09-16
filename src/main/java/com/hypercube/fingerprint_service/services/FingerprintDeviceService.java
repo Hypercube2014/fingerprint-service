@@ -117,8 +117,8 @@ public class FingerprintDeviceService {
                 );
             }
             
-            // Get fingerprint data (CORRECTED - using 2 bytes per pixel like C# sample)
-            byte[] rawData = new byte[width * height * 2]; // 2 bytes per pixel for 16-bit grayscale
+            // Get fingerprint data (CORRECTED - using 1 byte per pixel, the actual format)
+            byte[] rawData = new byte[width * height]; // 1 byte per pixel for 8-bit grayscale
             ret = ID_FprCapLoad.ID_FprCapinterface.instance.LIVESCAN_GetFPRawData(channel, rawData);
             
             if (ret != 1) {
@@ -220,12 +220,11 @@ public class FingerprintDeviceService {
                 logger.debug("MOSAIC quality assessment failed: {}", e.getMessage());
             }
             
-            // Method 3: Try MOSAIC quality assessment on 16-bit data directly
+            // Method 3: Try MOSAIC quality assessment on 8-bit data directly
             try {
                 if (GamcLoad.instance.MOSAIC_IsSupportFingerQuality() == 1) {
-                    // Convert 16-bit data to 8-bit for MOSAIC
-                    byte[] eightBitData = convert16BitTo8Bit(imageData, width, height);
-                    int mosaicQuality = GamcLoad.instance.MOSAIC_FingerQuality(eightBitData, width, height);
+                    // Data is already 8-bit, use directly
+                    int mosaicQuality = GamcLoad.instance.MOSAIC_FingerQuality(imageData, width, height);
                     logger.debug("MOSAIC quality assessment (8-bit): {}", mosaicQuality);
                     if (mosaicQuality >= 0) {
                         return Math.min(100, mosaicQuality);
@@ -255,8 +254,8 @@ public class FingerprintDeviceService {
             return 0;
         }
 
-        // Convert 16-bit data to 8-bit for analysis
-        byte[] eightBitData = convert16BitTo8Bit(imageData, width, height);
+        // Data is already 8-bit, use directly
+        byte[] eightBitData = imageData;
         
         // Calculate average intensity
         long totalIntensity = 0;
@@ -536,8 +535,8 @@ public class FingerprintDeviceService {
             try {
                 // Step 5: Continuous capture loop like C# sample (CORRECTED - using 2 bytes per pixel like C# sample)
                 logger.info("Step 5: Starting continuous capture loop with green thumb indicators active");
-                // CORRECTED: C# sample uses w * h * 2 (2 bytes per pixel for 16-bit grayscale)
-                byte[] rawData = new byte[width * height * 2];
+                // CORRECTED: Use 1 byte per pixel (8-bit grayscale) - the actual format
+                byte[] rawData = new byte[width * height];
                 
                 long startTime = System.currentTimeMillis();
                 long timeout = 10000; // 10 seconds timeout like C# sample
@@ -580,29 +579,35 @@ public class FingerprintDeviceService {
                     
                     logger.info("Attempt #{} - Image quality acceptable ({}), attempting split...", attemptCount, quality);
                     
-                    // Step 6: Prepare output buffer for split results (CORRECTED - following C# sample exactly)
-                    logger.debug("Preparing split buffers and performing FPSPLIT_DoSplit (NO FPSPLIT_Init needed)");
+                    // Step 6: Initialize FPSPLIT library (REQUIRED - like C# sample)
+                    logger.debug("Initializing FPSPLIT library with image size: {}x{}", width, height);
+                    int initRet = FpSplitLoad.instance.FPSPLIT_Init(width, height, 1);
+                    if (initRet != 1) {
+                        logger.warn("Attempt #{} - FPSPLIT_Init failed with return code: {}, retrying...", attemptCount, initRet);
+                        try {
+                            Thread.sleep(100);
+                        } catch (InterruptedException e) {
+                            Thread.currentThread().interrupt();
+                            break;
+                        }
+                        continue;
+                    }
+                    
+                    // Step 7: Prepare output buffer for split results (following C# sample exactly)
+                    logger.debug("Preparing split buffers and performing FPSPLIT_DoSplit");
                     
                     // CORRECTED: Use FPSPLIT_INFO structure constants for proper memory allocation (like C# sample)
                     int size = FPSPLIT_INFO.getStructureSize(); // 28 bytes on x64
                     int maxFingerprints = 10; // Maximum fingerprints supported by FPSPLIT
-                    // Allocate enough space for structures + pointer fields (8 bytes per structure for pOutBuf)
-                    int totalSize = size * maxFingerprints + 8 * maxFingerprints;
-                    Pointer infosPtr = new Memory(totalSize); // Space for max fingerprints with pointer space
-                    logger.debug("Allocated {} bytes for {} structures of {} bytes each + {} bytes for pointers", totalSize, maxFingerprints, size, 8 * maxFingerprints);
+                    Pointer infosPtr = new Memory(size * maxFingerprints); // Allocate space for structures
+                    logger.debug("Allocated {} bytes for {} structures of {} bytes each", size * maxFingerprints, maxFingerprints, size);
                     
                     // CORRECTED: Use FPSPLIT_INFO constants for correct offset calculation (like C# sample)
                     // Prepare memory for each fingerprint's output buffer (following C# sample pattern exactly)
-                    for (int i = 0; i < maxFingerprints; i++) { // Allocate for max fingerprints like C# sample
+                    for (int i = 0; i < maxFingerprints; i++) {
                         // Calculate offset to pOutBuf field within each structure (like C#: i * size + 24)
                         int pOutBufOffset = i * size + FPSPLIT_INFO.getPOutBufOffset();
                         logger.debug("Structure {}: pOutBufOffset = {} * {} + {} = {}", i, i, size, FPSPLIT_INFO.getPOutBufOffset(), pOutBufOffset);
-                        
-                        // Check bounds - pOutBuf field is 8 bytes, so we need pOutBufOffset + 8 <= totalSize
-                        if (pOutBufOffset + 8 > totalSize) {
-                            logger.error("Offset {} + 8 exceeds allocated memory size {}", pOutBufOffset, totalSize);
-                            throw new RuntimeException("Memory offset calculation error");
-                        }
                         
                         Pointer ptr = infosPtr.share(pOutBufOffset);
                         Pointer p = new Memory(splitWidth * splitHeight);
@@ -618,6 +623,9 @@ public class FingerprintDeviceService {
                     
                     int fpNum = fpNumRef.getValue(); // Get the actual number of fingerprints found
                     logger.info("Attempt #{} - FPSPLIT_DoSplit returned: {}, fingerprints found: {}", attemptCount, ret, fpNum);
+                    
+                    // Clean up FPSPLIT library
+                    FpSplitLoad.instance.FPSPLIT_Uninit();
                     
                     // CORRECTED: Following C# sample pattern - ignore return value, only check fpNum
                     // The C# code only checks if (FingerNum > 0), not the return value
@@ -798,8 +806,8 @@ public class FingerprintDeviceService {
                 
                 logger.info("Attempt #{} (elapsed: {}ms) - Capturing fingerprint image...", attemptCount, elapsed);
                 
-                // Capture fingerprint image (CORRECTED - using 2 bytes per pixel like other methods)
-                byte[] rawData = new byte[width * height * 2];
+                // Capture fingerprint image (CORRECTED - using 1 byte per pixel, the actual format)
+                byte[] rawData = new byte[width * height];
                 int captureRet = ID_FprCapLoad.ID_FprCapinterface.instance.LIVESCAN_GetFPRawData(channel, rawData);
                 
                 if (captureRet != 1) {
@@ -832,29 +840,35 @@ public class FingerprintDeviceService {
                 
                 logger.info("Attempt #{} - Image quality acceptable ({}), attempting split...", attemptCount, quality);
                 
-                // Step 6: Prepare output buffer for split results (following C# sample exactly)
-                logger.debug("Preparing split buffers and performing FPSPLIT_DoSplit (NO FPSPLIT_Init needed)");
+                // Step 6: Initialize FPSPLIT library (REQUIRED - like C# sample)
+                logger.debug("Initializing FPSPLIT library with image size: {}x{}", width, height);
+                int initRet = FpSplitLoad.instance.FPSPLIT_Init(width, height, 1);
+                if (initRet != 1) {
+                    logger.warn("Attempt #{} - FPSPLIT_Init failed with return code: {}, retrying...", attemptCount, initRet);
+                    try {
+                        Thread.sleep(100);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        break;
+                    }
+                    continue;
+                }
+                
+                // Step 7: Prepare output buffer for split results (following C# sample exactly)
+                logger.debug("Preparing split buffers and performing FPSPLIT_DoSplit");
                 
                 // CORRECTED: Use FPSPLIT_INFO structure constants for proper memory allocation (like C# sample)
                 int size = FPSPLIT_INFO.getStructureSize(); // 28 bytes on x64
                 int maxFingerprints = 10; // Maximum fingerprints supported by FPSPLIT
-                // Allocate enough space for structures + pointer fields (8 bytes per structure for pOutBuf)
-                int totalSize = size * maxFingerprints + 8 * maxFingerprints;
-                Pointer infosPtr = new Memory(totalSize); // Space for max fingerprints with pointer space
-                logger.debug("Allocated {} bytes for {} structures of {} bytes each + {} bytes for pointers", totalSize, maxFingerprints, size, 8 * maxFingerprints);
+                Pointer infosPtr = new Memory(size * maxFingerprints); // Allocate space for structures
+                logger.debug("Allocated {} bytes for {} structures of {} bytes each", size * maxFingerprints, maxFingerprints, size);
                 
                 // CORRECTED: Use FPSPLIT_INFO constants for correct offset calculation (like C# sample)
                 // Prepare memory for each fingerprint's output buffer (following C# sample pattern exactly)
-                for (int i = 0; i < maxFingerprints; i++) { // Allocate for max fingerprints like C# sample
+                for (int i = 0; i < maxFingerprints; i++) {
                     // Calculate offset to pOutBuf field within each structure (like C#: i * size + 24)
                     int pOutBufOffset = i * size + FPSPLIT_INFO.getPOutBufOffset();
                     logger.debug("Structure {}: pOutBufOffset = {} * {} + {} = {}", i, i, size, FPSPLIT_INFO.getPOutBufOffset(), pOutBufOffset);
-                    
-                    // Check bounds - pOutBuf field is 8 bytes, so we need pOutBufOffset + 8 <= totalSize
-                    if (pOutBufOffset + 8 > totalSize) {
-                        logger.error("Offset {} + 8 exceeds allocated memory size {}", pOutBufOffset, totalSize);
-                        throw new RuntimeException("Memory offset calculation error");
-                    }
                     
                     Pointer ptr = infosPtr.share(pOutBufOffset);
                     Pointer p = new Memory(splitWidth * splitHeight);
@@ -871,19 +885,11 @@ public class FingerprintDeviceService {
                 int fpNum = fpNumRef.getValue(); // Get the actual number of fingerprints found
                 logger.info("Attempt #{} - FPSPLIT_DoSplit returned: {}, fingerprints found: {}", attemptCount, ret, fpNum);
                 
-                // CORRECTED: FPSPLIT_DoSplit returns 0 for success (not 1), following C# sample pattern
-                if (ret != 0) {
-                    logger.warn("Attempt #{} - FPSPLIT_DoSplit failed with return code: {}, retrying...", attemptCount, ret);
-                    try {
-                        Thread.sleep(100); // Small delay before retry
-                    } catch (InterruptedException e) {
-                        Thread.currentThread().interrupt();
-                        break;
-                    }
-                    continue;
-                }
+                // Clean up FPSPLIT library
+                FpSplitLoad.instance.FPSPLIT_Uninit();
                 
-                // Check if we found exactly 4 right fingers (like C# sample checks for fingernum)
+                // CORRECTED: Following C# sample pattern - ignore return value, only check fpNum
+                // The C# code only checks if (FingerNum > 0), not the return value
                 if (fpNum == expectedFingerprints) {
                     logger.info("Attempt #{} - SUCCESS! FPSPLIT splitting completed successfully. Found exactly {} right fingers as expected. Processing results...", attemptCount, fpNum);
                     
@@ -1137,7 +1143,7 @@ public class FingerprintDeviceService {
                 logger.info("Preview thread started for channel: {} (following C# sample pattern)", channel);
                 
                 try {
-                    byte[] data = new byte[width * height * 2]; // CORRECTED: 2 bytes per pixel like C# sample
+                    byte[] data = new byte[width * height]; // CORRECTED: 1 byte per pixel, the actual format
                     long lastFrameTime = System.currentTimeMillis();
                     int frameCount = 0;
                     
@@ -1404,7 +1410,7 @@ public class FingerprintDeviceService {
             logger.info("Set LED result: {}", ledRet);
             
             // Capture image
-            byte[] rawData = new byte[width * height * 2]; // 2 bytes per pixel
+            byte[] rawData = new byte[width * height]; // 1 byte per pixel
             int captureRet = ID_FprCapLoad.ID_FprCapinterface.instance.LIVESCAN_GetFPRawData(channel, rawData);
             logger.info("Capture result: {}", captureRet);
             
@@ -1419,25 +1425,37 @@ public class FingerprintDeviceService {
             int quality = assessFingerprintQuality(rawData, width, height);
             logger.info("Image quality score: {}", quality);
             
-            // Test FPSPLIT_DoSplit with minimal setup
-            int size = FPSPLIT_INFO.getStructureSize();
-            Pointer infosPtr = new Memory(size * 10);
+            // Test FPSPLIT_DoSplit with proper initialization
+            int initRet = FpSplitLoad.instance.FPSPLIT_Init(width, height, 1);
+            logger.info("FPSPLIT_Init result: {}", initRet);
             
-            for (int i = 0; i < 10; i++) {
-                // Calculate offset to pOutBuf field within each structure (like C#: i * size + 24)
-                int pOutBufOffset = i * size + FPSPLIT_INFO.getPOutBufOffset();
-                Pointer ptr = infosPtr.share(pOutBufOffset);
-                Pointer p = new Memory(300 * 400);
-                ptr.setPointer(0, p);
+            int splitRet = -1;
+            int fpNum = 0;
+            
+            if (initRet == 1) {
+                int size = FPSPLIT_INFO.getStructureSize();
+                Pointer infosPtr = new Memory(size * 10);
+                
+                for (int i = 0; i < 10; i++) {
+                    // Calculate offset to pOutBuf field within each structure (like C#: i * size + 24)
+                    int pOutBufOffset = i * size + FPSPLIT_INFO.getPOutBufOffset();
+                    Pointer ptr = infosPtr.share(pOutBufOffset);
+                    Pointer p = new Memory(300 * 400);
+                    ptr.setPointer(0, p);
+                }
+                
+                IntByReference fpNumRef = new IntByReference(0);
+                splitRet = FpSplitLoad.instance.FPSPLIT_DoSplit(
+                    rawData, width, height, 1, 300, 400, fpNumRef, infosPtr
+                );
+                
+                fpNum = fpNumRef.getValue();
+                logger.info("FPSPLIT_DoSplit result: {}, fingerprints found: {}", splitRet, fpNum);
+                
+                FpSplitLoad.instance.FPSPLIT_Uninit();
+            } else {
+                logger.warn("FPSPLIT_Init failed, skipping split test");
             }
-            
-            IntByReference fpNumRef = new IntByReference(0);
-            int splitRet = FpSplitLoad.instance.FPSPLIT_DoSplit(
-                rawData, width, height, 1, 300, 400, fpNumRef, infosPtr
-            );
-            
-            int fpNum = fpNumRef.getValue();
-            logger.info("FPSPLIT_DoSplit result: {}, fingerprints found: {}", splitRet, fpNum);
             
             Map<String, Object> result = new HashMap<>();
             result.put("success", true);
@@ -1450,7 +1468,7 @@ public class FingerprintDeviceService {
             result.put("split_result", splitRet);
             result.put("fingerprints_found", fpNum);
             result.put("image_size_bytes", rawData.length);
-            result.put("expected_image_size", width * height * 2);
+            result.put("expected_image_size", width * height);
             result.put("note", "Single capture test completed");
             return result;
             
@@ -1778,8 +1796,8 @@ public class FingerprintDeviceService {
             int standardSize = 256 * 360;
             byte[] standardImage = new byte[standardSize];
             
-            // Calculate expected input size (16-bit data: 2 bytes per pixel)
-            int expectedInputSize = width * height * 2;
+            // Calculate expected input size (8-bit data: 1 byte per pixel)
+            int expectedInputSize = width * height;
             
             logger.debug("Converting image: {}x{} ({} bytes) -> 256x360 ({} bytes)", 
                 width, height, imageData.length, standardSize);
@@ -1789,21 +1807,20 @@ public class FingerprintDeviceService {
                     imageData.length, expectedInputSize);
             }
             
-            // Convert 16-bit data to 8-bit by taking every other byte (high byte)
-            // and resizing to 256x360
+            // Convert 8-bit data and resize to 256x360
             for (int y = 0; y < 360; y++) {
                 for (int x = 0; x < 256; x++) {
                     // Calculate source coordinates (scale from 256x360 to width x height)
                     int srcX = (x * width) / 256;
                     int srcY = (y * height) / 360;
                     
-                    // Calculate source index in 16-bit data (2 bytes per pixel)
-                    int srcIndex = (srcY * width + srcX) * 2;
+                    // Calculate source index in 8-bit data (1 byte per pixel)
+                    int srcIndex = srcY * width + srcX;
                     
                     // Bounds check
-                    if (srcIndex + 1 < imageData.length) {
-                        // Take the high byte (second byte) from 16-bit data
-                        standardImage[y * 256 + x] = imageData[srcIndex + 1];
+                    if (srcIndex < imageData.length) {
+                        // Use the byte directly from 8-bit data
+                        standardImage[y * 256 + x] = imageData[srcIndex];
                     } else {
                         // Pad with zero if out of bounds
                         standardImage[y * 256 + x] = 0;
@@ -1973,7 +1990,7 @@ public class FingerprintDeviceService {
             }
             
             // Capture a test image
-            byte[] rawData = new byte[width * height * 2];
+            byte[] rawData = new byte[width * height];
             int captureRet = ID_FprCapLoad.ID_FprCapinterface.instance.LIVESCAN_GetFPRawData(channel, rawData);
             
             if (captureRet != 1) {
