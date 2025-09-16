@@ -17,6 +17,11 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.ArrayList;
 import java.util.Date;
 import java.util.List;
+import java.text.SimpleDateFormat;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.io.IOException;
 import com.sun.jna.Pointer;
 import com.sun.jna.Memory;
 import com.sun.jna.ptr.IntByReference;
@@ -579,21 +584,8 @@ public class FingerprintDeviceService {
                     
                     logger.info("Attempt #{} - Image quality acceptable ({}), attempting split...", attemptCount, quality);
                     
-                    // Step 6: Initialize FPSPLIT library (REQUIRED - like C# sample)
-                    logger.debug("Initializing FPSPLIT library with image size: {}x{}", width, height);
-                    int initRet = FpSplitLoad.instance.FPSPLIT_Init(width, height, 1);
-                    if (initRet != 1) {
-                        logger.warn("Attempt #{} - FPSPLIT_Init failed with return code: {}, retrying...", attemptCount, initRet);
-                        try {
-                            Thread.sleep(100);
-                        } catch (InterruptedException e) {
-                            Thread.currentThread().interrupt();
-                            break;
-                        }
-                        continue;
-                    }
-                    
-                    // Step 7: Prepare output buffer for split results (following C# sample exactly)
+                    // Step 6: Prepare output buffer for split results (following C# sample exactly)
+                    // IMPORTANT: C# sample does NOT call FPSPLIT_Init() - it directly calls FPSPLIT_DoSplit()
                     logger.debug("Preparing split buffers and performing FPSPLIT_DoSplit");
                     
                     // CORRECTED: Use FPSPLIT_INFO structure constants for proper memory allocation (like C# sample)
@@ -624,13 +616,19 @@ public class FingerprintDeviceService {
                     int fpNum = fpNumRef.getValue(); // Get the actual number of fingerprints found
                     logger.info("Attempt #{} - FPSPLIT_DoSplit returned: {}, fingerprints found: {}", attemptCount, ret, fpNum);
                     
-                    // Clean up FPSPLIT library
-                    FpSplitLoad.instance.FPSPLIT_Uninit();
-                    
                     // CORRECTED: Following C# sample pattern - ignore return value, only check fpNum
-                    // The C# code only checks if (FingerNum > 0), not the return value
+                    // The C# code only checks if (FingerNum > 0) or if (FingerNum == expectedFingerprints), not the return value
+                    // NO FPSPLIT_Uninit() call in C# sample - it's not needed
                     if (fpNum == expectedFingerprints) {
                         logger.info("Attempt #{} - SUCCESS! FPSPLIT splitting completed successfully. Found exactly {} thumbs as expected. Processing results...", attemptCount, fpNum);
+                        
+                        // Step 6.5: Save the original captured image as BMP (like C# sample does)
+                        try {
+                            String originalImagePath = saveOriginalImageAsBMP(rawData, width, height, "two_thumbs_original");
+                            logger.info("Original captured image saved as: {}", originalImagePath);
+                        } catch (Exception e) {
+                            logger.warn("Failed to save original image as BMP: {}", e.getMessage());
+                        }
                         
                         // Step 7: Process the split results and store individual thumb images
                         List<Map<String, Object>> thumbs = new ArrayList<>();
@@ -840,21 +838,8 @@ public class FingerprintDeviceService {
                 
                 logger.info("Attempt #{} - Image quality acceptable ({}), attempting split...", attemptCount, quality);
                 
-                // Step 6: Initialize FPSPLIT library (REQUIRED - like C# sample)
-                logger.debug("Initializing FPSPLIT library with image size: {}x{}", width, height);
-                int initRet = FpSplitLoad.instance.FPSPLIT_Init(width, height, 1);
-                if (initRet != 1) {
-                    logger.warn("Attempt #{} - FPSPLIT_Init failed with return code: {}, retrying...", attemptCount, initRet);
-                    try {
-                        Thread.sleep(100);
-                    } catch (InterruptedException e) {
-                        Thread.currentThread().interrupt();
-                        break;
-                    }
-                    continue;
-                }
-                
-                // Step 7: Prepare output buffer for split results (following C# sample exactly)
+                // Step 6: Prepare output buffer for split results (following C# sample exactly)
+                // IMPORTANT: C# sample does NOT call FPSPLIT_Init() - it directly calls FPSPLIT_DoSplit()
                 logger.debug("Preparing split buffers and performing FPSPLIT_DoSplit");
                 
                 // CORRECTED: Use FPSPLIT_INFO structure constants for proper memory allocation (like C# sample)
@@ -885,13 +870,19 @@ public class FingerprintDeviceService {
                 int fpNum = fpNumRef.getValue(); // Get the actual number of fingerprints found
                 logger.info("Attempt #{} - FPSPLIT_DoSplit returned: {}, fingerprints found: {}", attemptCount, ret, fpNum);
                 
-                // Clean up FPSPLIT library
-                FpSplitLoad.instance.FPSPLIT_Uninit();
-                
                 // CORRECTED: Following C# sample pattern - ignore return value, only check fpNum
-                // The C# code only checks if (FingerNum > 0), not the return value
+                // The C# code only checks if (FingerNum > 0) or if (FingerNum == expectedFingerprints), not the return value
+                // NO FPSPLIT_Uninit() call in C# sample - it's not needed
                 if (fpNum == expectedFingerprints) {
                     logger.info("Attempt #{} - SUCCESS! FPSPLIT splitting completed successfully. Found exactly {} right fingers as expected. Processing results...", attemptCount, fpNum);
+                    
+                    // Step 6.5: Save the original captured image as BMP (like C# sample does)
+                    try {
+                        String originalImagePath = saveOriginalImageAsBMP(rawData, width, height, "four_right_original");
+                        logger.info("Original captured image saved as: {}", originalImagePath);
+                    } catch (Exception e) {
+                        logger.warn("Failed to save original image as BMP: {}", e.getMessage());
+                    }
                     
                     // Step 7: Process the split results and store individual finger images
                     List<Map<String, Object>> fingers = new ArrayList<>();
@@ -2168,5 +2159,95 @@ public class FingerprintDeviceService {
                 "error_details", "Error searching fingerprint templates: " + e.getMessage()
             );
         }
+    }
+    
+    /**
+     * Save original captured image as BMP file (following C# sample WriteHead method)
+     * This matches the C# sample code that saves captured images as BMP files
+     */
+    private String saveOriginalImageAsBMP(byte[] rawData, int width, int height, String prefix) throws IOException {
+        // Create BMP header (following C# sample WriteHead method exactly)
+        byte[] bmpData = createBMPFromRawData(rawData, width, height);
+        
+        // Generate unique filename with timestamp
+        String timestamp = new SimpleDateFormat("yyyyMMdd_HHmmss_SSS").format(new Date());
+        String filename = prefix + "_" + width + "x" + height + "_" + timestamp + ".bmp";
+        
+        // Save to fingerprints directory
+        Path fingerprintsDir = Paths.get("fingerprints");
+        if (!Files.exists(fingerprintsDir)) {
+            Files.createDirectories(fingerprintsDir);
+        }
+        
+        Path filePath = fingerprintsDir.resolve(filename);
+        Files.write(filePath, bmpData);
+        
+        logger.info("Saved original captured image: {} ({} bytes)", filePath.toAbsolutePath(), bmpData.length);
+        return filePath.toAbsolutePath().toString();
+    }
+    
+    /**
+     * Create BMP file data from raw fingerprint data (following C# sample WriteHead method)
+     * This exactly matches the C# FingerDll.WriteHead() method
+     */
+    private byte[] createBMPFromRawData(byte[] rawData, int width, int height) {
+        // BMP header structure (following C# sample exactly)
+        byte[] header = new byte[1078]; // 54 bytes header + 1024 bytes color palette
+        
+        // File header (14 bytes)
+        header[0] = 0x42; header[1] = 0x4d; // "BM" file type
+        // File size will be calculated later
+        header[2] = 0x00; header[3] = 0x00; header[4] = 0x00; header[5] = 0x00; // file size (placeholder)
+        header[6] = 0x00; header[7] = 0x00; // reserved
+        header[8] = 0x00; header[9] = 0x00; // reserved
+        header[10] = 0x36; header[11] = 0x04; header[12] = 0x00; header[13] = 0x00; // offset to data (1078)
+        
+        // Info header (40 bytes)
+        header[14] = 0x28; header[15] = 0x00; header[16] = 0x00; header[17] = 0x00; // header size (40)
+        
+        // Width (following C# sample bit manipulation)
+        long num = width;
+        header[18] = (byte)(num & 0xFF);
+        num = num >> 8; header[19] = (byte)(num & 0xFF);
+        num = num >> 8; header[20] = (byte)(num & 0xFF);
+        num = num >> 8; header[21] = (byte)(num & 0xFF);
+        
+        // Height (following C# sample bit manipulation)
+        num = height;
+        header[22] = (byte)(num & 0xFF);
+        num = num >> 8; header[23] = (byte)(num & 0xFF);
+        num = num >> 8; header[24] = (byte)(num & 0xFF);
+        num = num >> 8; header[25] = (byte)(num & 0xFF);
+        
+        header[26] = 0x01; header[27] = 0x00; // planes (must be 1)
+        header[28] = 0x08; header[29] = 0x00; // bits per pixel (8-bit grayscale)
+        header[30] = 0x00; header[31] = 0x00; header[32] = 0x00; header[33] = 0x00; // compression (none)
+        header[34] = 0x00; header[35] = 0x00; header[36] = 0x00; header[37] = 0x00; // image size (can be 0 for uncompressed)
+        header[38] = 0x00; header[39] = 0x00; header[40] = 0x00; header[41] = 0x00; // x pixels per meter
+        header[42] = 0x00; header[43] = 0x00; header[44] = 0x00; header[45] = 0x00; // y pixels per meter
+        header[46] = 0x00; header[47] = 0x00; header[48] = 0x00; header[49] = 0x00; // colors used
+        header[50] = 0x00; header[51] = 0x00; header[52] = 0x00; header[53] = 0x00; // colors important
+        
+        // Color palette (256 colors, grayscale - following C# sample exactly)
+        int j = 0;
+        for (int i = 54; i < 1078; i += 4) {
+            header[i] = header[i + 1] = header[i + 2] = (byte)j; // RGB all same for grayscale
+            header[i + 3] = 0; // reserved
+            j++;
+        }
+        
+        // Calculate and set file size
+        int fileSize = 1078 + width * height;
+        header[2] = (byte)(fileSize & 0xFF);
+        header[3] = (byte)((fileSize >> 8) & 0xFF);
+        header[4] = (byte)((fileSize >> 16) & 0xFF);
+        header[5] = (byte)((fileSize >> 24) & 0xFF);
+        
+        // Combine header and image data
+        byte[] bmpData = new byte[fileSize];
+        System.arraycopy(header, 0, bmpData, 0, 1078);
+        System.arraycopy(rawData, 0, bmpData, 1078, width * height);
+        
+        return bmpData;
     }
 }
