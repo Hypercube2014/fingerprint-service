@@ -17,8 +17,6 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.ArrayList;
 import java.util.Date;
 import java.util.List;
-import java.util.Optional;
-import java.util.stream.Collectors;
 import java.text.SimpleDateFormat;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -634,7 +632,6 @@ public class FingerprintDeviceService {
                 int expectedFingerprints = 2; // Two thumbs
                 
                 int attemptCount = 0;
-                int consecutiveFailures = 0; // Track consecutive FPSPLIT_DoSplit failures
                 while (System.currentTimeMillis() - startTime < timeout) {
                     attemptCount++;
                     long elapsed = System.currentTimeMillis() - startTime;
@@ -658,10 +655,10 @@ public class FingerprintDeviceService {
                     int quality = assessFingerprintQuality(rawData, width, height);
                     logger.info("Attempt #{} - Image quality score: {}", attemptCount, quality);
                     
-                    // Following C# sample pattern: Quality >= 0 for acceptance (line 859 in Form1.cs)
-                    // C# sample uses >= 0 for splitting, but >= 20 for template creation
-                    if (quality < 0) {
-                        logger.warn("Attempt #{} - No finger detected (quality: {}), retrying... [Following C# sample threshold >= 0]", attemptCount, quality);
+                    // Following C# sample pattern: Quality >= 0 for acceptance
+                    // But we use higher threshold (10) to ensure better quality for splitting
+                    if (quality < 10) {
+                        logger.warn("Attempt #{} - Image quality too low ({}), retrying... [Following Java demo threshold < 10]", attemptCount, quality);
                         try {
                             Thread.sleep(100); // Small delay before retry
                         } catch (InterruptedException e) {
@@ -677,70 +674,49 @@ public class FingerprintDeviceService {
                     // IMPORTANT: C# sample does NOT call FPSPLIT_Init() - it directly calls FPSPLIT_DoSplit()
                     logger.debug("Preparing split buffers and performing FPSPLIT_DoSplit");
                     
-                    // EXACT C# SAMPLE REPLICATION (Form1.cs lines 863-870) - FOR THUMBS
-                    // C#: int size = Marshal.SizeOf(typeof(FingerDll.FPSPLIT_INFO));
-                    int size = FPSPLIT_INFO.getStructureSize(); // 28 bytes
-                    // C#: IntPtr infosIntptr = Marshal.AllocHGlobal(size * 10);
-                    Pointer infosPtr = new Memory(size * 10); // Allocate exactly like C# sample
-                    logger.info("Attempt #{} - THUMBS: Allocated {} bytes for 10 structures of {} bytes each (EXACT C# pattern)", attemptCount, size * 10, size);
+                    // CORRECTED: Use FPSPLIT_INFO structure constants for proper memory allocation (like C# sample)
+                    int size = FPSPLIT_INFO.getStructureSize(); // 28 bytes on x64
+                    int maxFingerprints = 10; // Maximum fingerprints supported by FPSPLIT
+                    // FIXED: Allocate extra space for the last pointer field to prevent bounds errors
+                    // Last structure's pOutBuf is at offset (9 * 28 + 24) = 276, needs 8 bytes -> 284 total
+                    int totalMemoryNeeded = size * maxFingerprints + 8; // Extra 8 bytes for safety
+                    Pointer infosPtr = new Memory(totalMemoryNeeded); // Allocate space for structures
+                    logger.debug("Allocated {} bytes for {} structures of {} bytes each", size * maxFingerprints, maxFingerprints, size);
                     
-                    // C# loop: for (int i = 0; i < 10; i++)
-                    for (int i = 0; i < 10; i++) {
-                        // C#: IntPtr ptr = (IntPtr)((UInt32)infosIntptr + i * size + 24);
-                        int ptrOffset = i * size + 24; // EXACT C# calculation: i * size + 24
-                        // C#: IntPtr p = Marshal.AllocHGlobal(300 * 400);
-                        Pointer p = new Memory(300 * 400); // EXACT C# size: 300 * 400
-                        // C#: Marshal.WriteIntPtr(ptr, p);
-                        infosPtr.setPointer(ptrOffset, p); // Write pointer exactly like C#
-                        logger.debug("THUMBS Structure {}: ptr offset={}, allocated {}x{} buffer", i, ptrOffset, 300, 400);
+                    // CORRECTED: Use FPSPLIT_INFO constants for correct offset calculation (like C# sample)
+                    // Prepare memory for each fingerprint's output buffer (following C# sample pattern exactly)
+                    for (int i = 0; i < maxFingerprints; i++) {
+                        // Calculate offset to pOutBuf field within each structure (like C#: i * size + 24)
+                        int pOutBufOffset = i * size + FPSPLIT_INFO.getPOutBufOffset();
+                        logger.debug("Structure {}: pOutBufOffset = {} * {} + {} = {}", i, i, size, FPSPLIT_INFO.getPOutBufOffset(), pOutBufOffset);
+                        
+                        // Validate offset is within bounds before setting pointer
+                        if (pOutBufOffset + 8 > totalMemoryNeeded) { // 8 bytes for pointer on x64
+                            logger.error("Calculated pOutBufOffset {} exceeds allocated memory size {}", pOutBufOffset + 8, totalMemoryNeeded);
+                            throw new RuntimeException("Memory offset calculation error: pOutBufOffset=" + pOutBufOffset + ", totalSize=" + totalMemoryNeeded);
+                        }
+                        
+                        // Allocate memory for this fingerprint's image data
+                        Pointer p = new Memory(splitWidth * splitHeight);
+                        
+                        // Write the pointer address to the structure (like C# Marshal.WriteIntPtr(ptr, p))
+                        infosPtr.setPointer(pOutBufOffset, p);
                     }
                     
-                    // EXACT C# SAMPLE CALL (Form1.cs line 871) - FOR THUMBS
-                    // C#: int ret = FingerDll.FPSPLIT_DoSplit(data, w, h, 1, 300, 400, ref FingerNum, infosIntptr);
-                    logger.info("Attempt #{} - THUMBS: Calling FPSPLIT_DoSplit EXACTLY like C# sample: image={}x{}, split=300x400", attemptCount, width, height);
+                    // CRITICAL FIX: Apply image preprocessing like C# sample ShowPreview method
+                    // The C# sample flips the image vertically before calling FPSPLIT_DoSplit
+                    logger.debug("Attempt #{} - Applying image preprocessing (vertical flip like C# sample)", attemptCount);
+                    flipImageVertically(rawData, width, height);
+                    
+                    // Perform the splitting (CORRECTED - using IntByReference like C# ref int)
+                    logger.info("Attempt #{} - Calling FPSPLIT_DoSplit with image size: {}x{}, split size: {}x{}", attemptCount, width, height, splitWidth, splitHeight);
                     IntByReference fpNumRef = new IntByReference(0);
-                    // CRITICAL: Use EXACT C# parameters: 300, 400 (not splitWidth, splitHeight)
                     int ret = FpSplitLoad.instance.FPSPLIT_DoSplit(
-                        rawData, width, height, 1, 300, 400, fpNumRef, infosPtr
+                        rawData, width, height, 1, splitWidth, splitHeight, fpNumRef, infosPtr
                     );
                     
                     int fpNum = fpNumRef.getValue(); // Get the actual number of fingerprints found
                     logger.info("Attempt #{} - FPSPLIT_DoSplit returned: {}, fingerprints found: {}", attemptCount, ret, fpNum);
-                    
-                    // Add detailed diagnostics for FPSPLIT_DoSplit failures
-                    if (ret == -1) {
-                        logger.warn("Attempt #{} - FPSPLIT_DoSplit returned -1 (FAILURE). Possible causes:", attemptCount);
-                        logger.warn("  1. Split size {}x{} might be incompatible with image content", splitWidth, splitHeight);
-                        logger.warn("  2. Finger placement might be incorrect (ensure all {} fingers are clearly visible)", expectedFingerprints);
-                        logger.warn("  3. Image quality {} might be insufficient for splitting despite passing threshold", quality);
-                        logger.warn("  4. Scanner calibration might be needed");
-                        logger.warn("  C# Sample uses 300x400 for four-finger capture, 256x360 for template creation");
-                    }
-                    if (fpNum == 0) {
-                        logger.warn("Attempt #{} - No fingerprints detected in split. Check finger placement and scanner contact", attemptCount);
-                    } else if (fpNum > 0 && fpNum < expectedFingerprints) {
-                        logger.warn("Attempt #{} - Only {} out of {} expected fingerprints found. Partial detection - check finger placement", 
-                                   attemptCount, fpNum, expectedFingerprints);
-                    } else if (fpNum > expectedFingerprints) {
-                        logger.warn("Attempt #{} - More fingerprints found ({}) than expected ({}). Check for overlapping fingers", 
-                                   attemptCount, fpNum, expectedFingerprints);
-                    }
-                    
-                    // Track consecutive failures for early exit
-                    if (ret == -1 || fpNum == 0) {
-                        consecutiveFailures++;
-                        if (consecutiveFailures >= 10) {
-                            logger.error("Stopping after {} consecutive FPSPLIT failures. Likely hardware/calibration issue.", consecutiveFailures);
-                            logger.error("Recommendations:");
-                            logger.error("  1. Check scanner hardware connection and calibration");
-                            logger.error("  2. Verify thumb placement covers both thumbs clearly");
-                            logger.error("  3. Ensure proper contact pressure on scanner surface");
-                            logger.error("  4. Try cleaning scanner surface");
-                            break;
-                        }
-                    } else {
-                        consecutiveFailures = 0; // Reset on any progress
-                    }
                     
                     // CORRECTED: Following C# sample pattern - ignore return value, only check fpNum
                     // The C# code only checks if (FingerNum > 0) or if (FingerNum == expectedFingerprints), not the return value
@@ -759,23 +735,23 @@ public class FingerprintDeviceService {
                         // Step 7: Process the split results and store individual thumb images
                         List<Map<String, Object>> thumbs = new ArrayList<>();
                         
-                        // Extract left thumb (position 0) - Use EXACT C# dimensions: 300x400
-                        Map<String, Object> leftThumb = processSplitThumb(infosPtr, 0, "left_thumb", 300, 400);
+                        // Extract left thumb (position 0)
+                        Map<String, Object> leftThumb = processSplitThumb(infosPtr, 0, "left_thumb", splitWidth, splitHeight);
                         if (leftThumb != null) {
                             thumbs.add(leftThumb);
                         }
                         
-                        // Extract right thumb (position 1) - Use EXACT C# dimensions: 300x400
-                        Map<String, Object> rightThumb = processSplitThumb(infosPtr, 1, "right_thumb", 300, 400);
+                        // Extract right thumb (position 1)
+                        Map<String, Object> rightThumb = processSplitThumb(infosPtr, 1, "right_thumb", splitWidth, splitHeight);
                         if (rightThumb != null) {
                             thumbs.add(rightThumb);
                         }
                         
                         // Step 7.5: Clean up allocated memory (like C# sample)
                         try {
-                            for (int i = 0; i < 10; i++) { // EXACT C# sample: i < 10
-                                int ptrOffset = i * size + 24; // EXACT C# calculation: i * size + 24
-                                Pointer pOutBuf = infosPtr.getPointer(ptrOffset);
+                            for (int i = 0; i < maxFingerprints; i++) {
+                                int pOutBufOffset = i * size + FPSPLIT_INFO.getPOutBufOffset();
+                                Pointer pOutBuf = infosPtr.getPointer(pOutBufOffset);
                                 if (pOutBuf != null) {
                                     // Memory will be garbage collected by JNA - no explicit free needed
                                     logger.debug("Memory cleanup for structure {} completed", i);
@@ -936,7 +912,6 @@ public class FingerprintDeviceService {
             int expectedFingerprints = 4; // Right four fingers: index, middle, ring, little
             int timeout = 10000; // 10 seconds timeout
             int attemptCount = 0;
-            int consecutiveFailures = 0; // Track consecutive FPSPLIT_DoSplit failures
             long startTime = System.currentTimeMillis();
             
             while (System.currentTimeMillis() - startTime < timeout) {
@@ -967,10 +942,9 @@ public class FingerprintDeviceService {
                 int quality = assessFingerprintQuality(rawData, width, height);
                 logger.info("Attempt #{} - Image quality score: {}", attemptCount, quality);
                 
-                // Following C# sample pattern: Quality >= 0 for acceptance (line 859 in Form1.cs)
-                // C# sample uses >= 0 for splitting, but >= 20 for template creation
-                if (quality < 0) {
-                    logger.warn("Attempt #{} - No finger detected (quality: {}), retrying... [Following C# sample threshold >= 0]", attemptCount, quality);
+                // Following Java demo pattern: < 10 = bad quality, requires retry
+                if (quality < 10) { // Java demo threshold for "place finger properly"
+                    logger.warn("Attempt #{} - Image quality too low ({}), retrying... [Following Java demo threshold < 10]", attemptCount, quality);
                     try {
                         Thread.sleep(100);
                     } catch (InterruptedException e) {
@@ -986,75 +960,49 @@ public class FingerprintDeviceService {
                 // IMPORTANT: C# sample does NOT call FPSPLIT_Init() - it directly calls FPSPLIT_DoSplit()
                 logger.debug("Preparing split buffers and performing FPSPLIT_DoSplit");
                 
-                // EXACT C# SAMPLE REPLICATION (Form1.cs lines 863-870)
-                // C#: int size = Marshal.SizeOf(typeof(FingerDll.FPSPLIT_INFO));
-                int size = FPSPLIT_INFO.getStructureSize(); // 28 bytes
-                // C#: IntPtr infosIntptr = Marshal.AllocHGlobal(size * 10);
-                Pointer infosPtr = new Memory(size * 10); // Allocate exactly like C# sample
-                logger.info("Attempt #{} - Allocated {} bytes for 10 structures of {} bytes each (EXACT C# pattern)", attemptCount, size * 10, size);
+                // CORRECTED: Use FPSPLIT_INFO structure constants for proper memory allocation (like C# sample)
+                int size = FPSPLIT_INFO.getStructureSize(); // 28 bytes on x64
+                int maxFingerprints = 10; // Maximum fingerprints supported by FPSPLIT
+                // FIXED: Allocate extra space for the last pointer field to prevent bounds errors
+                // Last structure's pOutBuf is at offset (9 * 28 + 24) = 276, needs 8 bytes -> 284 total
+                int totalMemoryNeeded = size * maxFingerprints + 8; // Extra 8 bytes for safety
+                Pointer infosPtr = new Memory(totalMemoryNeeded); // Allocate space for structures
+                logger.debug("Allocated {} bytes for {} structures of {} bytes each", size * maxFingerprints, maxFingerprints, size);
                 
-                // C# loop: for (int i = 0; i < 10; i++)
-                for (int i = 0; i < 10; i++) {
-                    // C#: IntPtr ptr = (IntPtr)((UInt32)infosIntptr + i * size + 24);
-                    int ptrOffset = i * size + 24; // EXACT C# calculation: i * size + 24
-                    // C#: IntPtr p = Marshal.AllocHGlobal(300 * 400);
-                    Pointer p = new Memory(300 * 400); // EXACT C# size: 300 * 400 (not splitWidth * splitHeight)
-                    // C#: Marshal.WriteIntPtr(ptr, p);
-                    infosPtr.setPointer(ptrOffset, p); // Write pointer exactly like C#
-                    logger.debug("Structure {}: ptr offset={}, allocated {}x{} buffer", i, ptrOffset, 300, 400);
+                // CORRECTED: Use FPSPLIT_INFO constants for correct offset calculation (like C# sample)
+                // Prepare memory for each fingerprint's output buffer (following C# sample pattern exactly)
+                for (int i = 0; i < maxFingerprints; i++) {
+                    // Calculate offset to pOutBuf field within each structure (like C#: i * size + 24)
+                    int pOutBufOffset = i * size + FPSPLIT_INFO.getPOutBufOffset();
+                    logger.debug("Structure {}: pOutBufOffset = {} * {} + {} = {}", i, i, size, FPSPLIT_INFO.getPOutBufOffset(), pOutBufOffset);
+                    
+                    // Validate offset is within bounds before setting pointer
+                    if (pOutBufOffset + 8 > totalMemoryNeeded) { // 8 bytes for pointer on x64
+                        logger.error("Calculated pOutBufOffset {} exceeds allocated memory size {}", pOutBufOffset + 8, totalMemoryNeeded);
+                        throw new RuntimeException("Memory offset calculation error: pOutBufOffset=" + pOutBufOffset + ", totalSize=" + totalMemoryNeeded);
+                    }
+                    
+                    // Allocate memory for this fingerprint's image data
+                    Pointer p = new Memory(splitWidth * splitHeight);
+                    
+                    // Write the pointer address to the structure (like C# Marshal.WriteIntPtr(ptr, p))
+                    infosPtr.setPointer(pOutBufOffset, p);
                 }
                 
-                // EXACT C# SAMPLE CALL (Form1.cs line 871)
-                // C#: int ret = FingerDll.FPSPLIT_DoSplit(data, w, h, 1, 300, 400, ref FingerNum, infosIntptr);
-                logger.info("Attempt #{} - Calling FPSPLIT_DoSplit EXACTLY like C# sample: image={}x{}, split=300x400", attemptCount, width, height);
-                logger.debug("Attempt #{} - Raw data buffer size: {} bytes, expected: {} bytes", attemptCount, rawData.length, width * height * 2);
+                // CRITICAL FIX: Apply image preprocessing like C# sample ShowPreview method
+                // The C# sample flips the image vertically before calling FPSPLIT_DoSplit
+                logger.debug("Attempt #{} - Applying image preprocessing (vertical flip like C# sample)", attemptCount);
+                flipImageVertically(rawData, width, height);
                 
+                // Perform the splitting (CORRECTED - using IntByReference like C# ref int)
+                logger.info("Attempt #{} - Calling FPSPLIT_DoSplit with image size: {}x{}, split size: {}x{}", attemptCount, width, height, splitWidth, splitHeight);
                 IntByReference fpNumRef = new IntByReference(0);
-                long splitStartTime = System.nanoTime();
-                // CRITICAL: Use EXACT C# parameters: 300, 400 (not splitWidth, splitHeight)
                 int ret = FpSplitLoad.instance.FPSPLIT_DoSplit(
-                    rawData, width, height, 1, 300, 400, fpNumRef, infosPtr
+                    rawData, width, height, 1, splitWidth, splitHeight, fpNumRef, infosPtr
                 );
-                long splitDuration = (System.nanoTime() - splitStartTime) / 1_000_000;
                 
                 int fpNum = fpNumRef.getValue(); // Get the actual number of fingerprints found
-                logger.info("Attempt #{} - FPSPLIT_DoSplit returned: {}, fingerprints found: {}, duration: {}ms", 
-                           attemptCount, ret, fpNum, splitDuration);
-                
-                // Add detailed diagnostics for FPSPLIT_DoSplit failures
-                if (ret == -1) {
-                    logger.warn("Attempt #{} - FPSPLIT_DoSplit returned -1 (FAILURE). Possible causes:", attemptCount);
-                    logger.warn("  1. Split size {}x{} might be incompatible with image content", splitWidth, splitHeight);
-                    logger.warn("  2. Finger placement might be incorrect (ensure all {} right fingers are clearly visible)", expectedFingerprints);
-                    logger.warn("  3. Image quality {} might be insufficient for splitting despite passing threshold", quality);
-                    logger.warn("  4. Scanner calibration might be needed");
-                    logger.warn("  C# Sample uses 300x400 for four-finger capture, 256x360 for template creation");
-                }
-                if (fpNum == 0) {
-                    logger.warn("Attempt #{} - No fingerprints detected in split. Check finger placement and scanner contact", attemptCount);
-                } else if (fpNum > 0 && fpNum < expectedFingerprints) {
-                    logger.warn("Attempt #{} - Only {} out of {} expected fingerprints found. Partial detection - check finger placement", 
-                               attemptCount, fpNum, expectedFingerprints);
-                } else if (fpNum > expectedFingerprints) {
-                    logger.warn("Attempt #{} - More fingerprints found ({}) than expected ({}). Check for overlapping fingers", 
-                               attemptCount, fpNum, expectedFingerprints);
-                }
-                
-                // Track consecutive failures for early exit
-                if (ret == -1 || fpNum == 0) {
-                    consecutiveFailures++;
-                    if (consecutiveFailures >= 10) {
-                        logger.error("Stopping after {} consecutive FPSPLIT failures. Likely hardware/calibration issue.", consecutiveFailures);
-                        logger.error("Recommendations:");
-                        logger.error("  1. Check scanner hardware connection and calibration");
-                        logger.error("  2. Verify finger placement covers all four right fingers clearly");
-                        logger.error("  3. Ensure proper contact pressure on scanner surface");
-                        logger.error("  4. Try cleaning scanner surface");
-                        break;
-                    }
-                } else {
-                    consecutiveFailures = 0; // Reset on any progress
-                }
+                logger.info("Attempt #{} - FPSPLIT_DoSplit returned: {}, fingerprints found: {}", attemptCount, ret, fpNum);
                 
                 // CORRECTED: Following C# sample pattern - ignore return value, only check fpNum
                 // The C# code only checks if (FingerNum > 0) or if (FingerNum == expectedFingerprints), not the return value
@@ -1076,22 +1024,20 @@ public class FingerprintDeviceService {
                     // Process each finger (right hand: index, middle, ring, little)
                     String[] fingerNames = {"right_index", "right_middle", "right_ring", "right_little"};
                     for (int i = 0; i < fpNum; i++) {
-                        // Use EXACT C# dimensions: 300x400 (not splitWidth x splitHeight)
-                        Map<String, Object> finger = processSplitFinger(infosPtr, i, fingerNames[i], 300, 400);
+                        Map<String, Object> finger = processSplitFinger(infosPtr, i, fingerNames[i], splitWidth, splitHeight);
                         if (finger != null) {
                             fingers.add(finger);
                         }
                     }
                     
-                    // EXACT C# CLEANUP (Form1.cs lines 872-876)
-                    // C#: for (int i = 0; i < 10; i++) { Marshal.FreeHGlobal(Marshal.ReadIntPtr(...)); }
+                    // Step 7.5: Clean up allocated memory (like C# sample)
                     try {
-                        for (int i = 0; i < 10; i++) { // EXACT C# loop: i < 10
-                            int ptrOffset = i * size + 24; // EXACT C# calculation: i * size + 24
-                            Pointer pOutBuf = infosPtr.getPointer(ptrOffset);
+                        for (int i = 0; i < maxFingerprints; i++) {
+                            int pOutBufOffset = i * size + FPSPLIT_INFO.getPOutBufOffset();
+                            Pointer pOutBuf = infosPtr.getPointer(pOutBufOffset);
                             if (pOutBuf != null) {
-                                // JNA will handle cleanup automatically
-                                logger.debug("Memory cleanup for structure {} at offset {} completed", i, ptrOffset);
+                                // Memory will be garbage collected by JNA - no explicit free needed
+                                logger.debug("Memory cleanup for structure {} completed", i);
                             }
                         }
                     } catch (Exception e) {
@@ -1206,7 +1152,7 @@ public class FingerprintDeviceService {
             return null;
         }
     }
-    
+
     /**
      * Process a split thumb result and store it as an image
      */
@@ -1629,24 +1575,24 @@ public class FingerprintDeviceService {
             int fpNum = 0;
             
             if (initRet == 1) {
-            int size = FPSPLIT_INFO.getStructureSize();
-            Pointer infosPtr = new Memory(size * 10);
-            
-            for (int i = 0; i < 10; i++) {
+                int size = FPSPLIT_INFO.getStructureSize();
+                Pointer infosPtr = new Memory(size * 10);
+                
+                for (int i = 0; i < 10; i++) {
                     // Calculate offset to pOutBuf field within each structure (like C#: i * size + 24)
                     int pOutBufOffset = i * size + FPSPLIT_INFO.getPOutBufOffset();
                     Pointer ptr = infosPtr.share(pOutBufOffset);
-                Pointer p = new Memory(300 * 400);
-                ptr.setPointer(0, p);
-            }
-            
-            IntByReference fpNumRef = new IntByReference(0);
+                    Pointer p = new Memory(300 * 400);
+                    ptr.setPointer(0, p);
+                }
+                
+                IntByReference fpNumRef = new IntByReference(0);
                 splitRet = FpSplitLoad.instance.FPSPLIT_DoSplit(
-                rawData, width, height, 1, 300, 400, fpNumRef, infosPtr
-            );
-            
+                    rawData, width, height, 1, 300, 400, fpNumRef, infosPtr
+                );
+                
                 fpNum = fpNumRef.getValue();
-            logger.info("FPSPLIT_DoSplit result: {}, fingerprints found: {}", splitRet, fpNum);
+                logger.info("FPSPLIT_DoSplit result: {}, fingerprints found: {}", splitRet, fpNum);
                 
                 FpSplitLoad.instance.FPSPLIT_Uninit();
             } else {
@@ -2361,8 +2307,8 @@ public class FingerprintDeviceService {
             
         } catch (Exception e) {
             logger.error("Error searching fingerprint templates for channel: {}: {}", channel, e.getMessage(), e);
-                    return Map.of(
-                        "success", false,
+            return Map.of(
+                "success", false,
                 "error_details", "Error searching fingerprint templates: " + e.getMessage()
             );
         }
@@ -2459,249 +2405,24 @@ public class FingerprintDeviceService {
     }
     
     /**
-     * Debug FPSPLIT functionality with detailed diagnostics
-     * This method tests FPSPLIT_DoSplit with various configurations and provides detailed analysis
+     * Flip image vertically (like C# sample ShowPreview method)
+     * This is CRITICAL preprocessing required before FPSPLIT_DoSplit
+     * The C# sample does this in ShowPreview before calling FPSPLIT_DoSplit
      */
-    public Map<String, Object> debugFpSplitTest(int channel, int width, int height, int splitWidth, int splitHeight, int maxAttempts) {
-        logger.info("=== FPSPLIT DEBUG TEST STARTING ===");
-        logger.info("Parameters: channel={}, image={}x{}, split={}x{}, maxAttempts={}", 
-                   channel, width, height, splitWidth, splitHeight, maxAttempts);
-        
-        try {
-            // Step 1: Test SDK availability
-            logger.info("Step 1: Testing SDK availability...");
-            if (!isWindows) {
-                        return Map.of(
-                            "success", false,
-                    "error", "Platform not supported. This SDK requires Windows.",
-                    "step", "platform_check"
-                );
-            }
-            
-            // Step 2: Initialize device
-            logger.info("Step 2: Initializing device...");
-            int deviceRet = ID_FprCapLoad.ID_FprCapinterface.instance.LIVESCAN_Init();
-            if (deviceRet != 1) {
-                    return Map.of(
-                        "success", false,
-                    "error", "Device initialization failed with return code: " + deviceRet,
-                    "step", "device_init"
-                );
-            }
-            
-            // Step 3: Test different split sizes
-            logger.info("Step 3: Testing multiple split size configurations...");
-            List<Map<String, Object>> testResults = new ArrayList<>();
-            
-            // Test configurations: C# sample sizes
-            int[][] testConfigs = {
-                {300, 400}, // C# four-finger capture (line 871)
-                {256, 360}, // C# template creation (line 546)
-                {splitWidth, splitHeight} // User-specified
-            };
-            
-            String[] configNames = {"C# Four-Finger", "C# Template", "User Specified"};
-            
-            for (int configIndex = 0; configIndex < testConfigs.length; configIndex++) {
-                int testSplitWidth = testConfigs[configIndex][0];
-                int testSplitHeight = testConfigs[configIndex][1];
-                String configName = configNames[configIndex];
+    private void flipImageVertically(byte[] imageData, int width, int height) {
+        // Following C# sample ShowPreview logic exactly (lines 308-318 in Form1.cs)
+        for (int y = 0; y < height / 2; y++) {
+            int swapY = height - y - 1;
+            for (int x = 0; x < width; x++) {
+                int index = y * width + x;
+                int swapIndex = swapY * width + x;
                 
-                logger.info("Testing configuration: {} ({}x{})", configName, testSplitWidth, testSplitHeight);
-                
-                Map<String, Object> configResult = testSingleSplitConfiguration(
-                    channel, width, height, testSplitWidth, testSplitHeight, maxAttempts, configName);
-                testResults.add(configResult);
-                
-                // If we found a working configuration, break
-                if ((Boolean) configResult.get("success")) {
-                    logger.info("SUCCESS with configuration: {} ({}x{})", configName, testSplitWidth, testSplitHeight);
-                    break;
-                }
-            }
-            
-            // Step 4: Analyze results
-            logger.info("Step 4: Analyzing test results...");
-            Map<String, Object> analysis = analyzeTestResults(testResults);
-            
-            logger.info("=== FPSPLIT DEBUG TEST COMPLETED ===");
-            return Map.of(
-                "success", testResults.stream().anyMatch(r -> (Boolean) r.get("success")),
-                "test_results", testResults,
-                "analysis", analysis,
-                "recommendations", generateRecommendations(testResults),
-                "timestamp", System.currentTimeMillis()
-            );
-            
-        } catch (Exception e) {
-            logger.error("Error in FPSPLIT debug test: {}", e.getMessage(), e);
-            return Map.of(
-                "success", false,
-                "error", "Debug test failed: " + e.getMessage(),
-                "step", "exception"
-            );
-        }
-    }
-    
-    private Map<String, Object> testSingleSplitConfiguration(int channel, int width, int height, 
-                                                           int splitWidth, int splitHeight, int maxAttempts, String configName) {
-        logger.info("--- Testing {} configuration: {}x{} ---", configName, splitWidth, splitHeight);
-        
-        List<Map<String, Object>> attemptResults = new ArrayList<>();
-        
-        for (int attempt = 1; attempt <= maxAttempts; attempt++) {
-            logger.info("Attempt {}/{} for {}", attempt, maxAttempts, configName);
-            
-            try {
-                // Capture image
-                byte[] rawData = new byte[width * height * 2];
-                int captureRet = ID_FprCapLoad.ID_FprCapinterface.instance.LIVESCAN_GetFPRawData(channel, rawData);
-                
-                if (captureRet != 1) {
-                    attemptResults.add(Map.of(
-                        "attempt", attempt,
-                        "capture_success", false,
-                        "capture_return_code", captureRet,
-                        "error", "Image capture failed"
-                    ));
-                    continue;
-                }
-                
-                // Check quality
-                int quality = assessFingerprintQuality(rawData, width, height);
-                logger.info("Attempt {} quality: {}", attempt, quality);
-                
-                // Test FPSPLIT_DoSplit
-                Map<String, Object> splitResult = testFpSplitCall(rawData, width, height, splitWidth, splitHeight);
-                
-                Map<String, Object> attemptResult = new HashMap<>();
-                attemptResult.put("attempt", attempt);
-                attemptResult.put("capture_success", true);
-                attemptResult.put("quality", quality);
-                attemptResult.put("split_result", splitResult);
-                
-                attemptResults.add(attemptResult);
-                
-                // If split was successful, we can stop testing this configuration
-                if ((Boolean) splitResult.get("success")) {
-                    logger.info("Configuration {} succeeded on attempt {}", configName, attempt);
-                    break;
-                }
-                
-            } catch (Exception e) {
-                logger.error("Error in attempt {} for {}: {}", attempt, configName, e.getMessage());
-                attemptResults.add(Map.of(
-                    "attempt", attempt,
-                    "error", e.getMessage()
-                ));
+                // Swap bytes at index and swapIndex
+                byte temp = imageData[index];
+                imageData[index] = imageData[swapIndex];
+                imageData[swapIndex] = temp;
             }
         }
-        
-        boolean configSuccess = attemptResults.stream()
-            .anyMatch(r -> r.containsKey("split_result") && 
-                          (Boolean) ((Map<String, Object>) r.get("split_result")).get("success"));
-        
-                return Map.of(
-            "config_name", configName,
-            "split_size", splitWidth + "x" + splitHeight,
-            "success", configSuccess,
-            "attempts", attemptResults
-        );
-    }
-    
-    private Map<String, Object> testFpSplitCall(byte[] rawData, int width, int height, int splitWidth, int splitHeight) {
-        try {
-            // Prepare memory structures (same as main implementation)
-            int size = FPSPLIT_INFO.getStructureSize();
-            int maxFingerprints = 10;
-            int totalMemoryNeeded = size * maxFingerprints + 8;
-            Pointer infosPtr = new Memory(totalMemoryNeeded);
-            
-            for (int i = 0; i < maxFingerprints; i++) {
-                int pOutBufOffset = i * size + FPSPLIT_INFO.getPOutBufOffset();
-                Pointer p = new Memory(splitWidth * splitHeight);
-                infosPtr.setPointer(pOutBufOffset, p);
-            }
-            
-            // Call FPSPLIT_DoSplit
-            IntByReference fpNumRef = new IntByReference(0);
-            long startTime = System.nanoTime();
-            int ret = FpSplitLoad.instance.FPSPLIT_DoSplit(
-                rawData, width, height, 1, splitWidth, splitHeight, fpNumRef, infosPtr
-            );
-            long duration = (System.nanoTime() - startTime) / 1_000_000;
-            
-            int fpNum = fpNumRef.getValue();
-                
-                return Map.of(
-                "success", fpNum > 0,
-                "return_code", ret,
-                "fingerprints_found", fpNum,
-                "duration_ms", duration,
-                "split_size", splitWidth + "x" + splitHeight
-            );
-            
-        } catch (Exception e) {
-            return Map.of(
-                "success", false,
-                "error", e.getMessage()
-            );
-        }
-    }
-    
-    private Map<String, Object> analyzeTestResults(List<Map<String, Object>> testResults) {
-        Map<String, Object> analysis = new HashMap<>();
-        
-        // Count successes and failures
-        long successCount = testResults.stream().mapToLong(r -> (Boolean) r.get("success") ? 1 : 0).sum();
-        analysis.put("successful_configs", successCount);
-        analysis.put("total_configs", testResults.size());
-        
-        // Find working configurations
-        List<String> workingConfigs = testResults.stream()
-            .filter(r -> (Boolean) r.get("success"))
-            .map(r -> (String) r.get("config_name") + " (" + r.get("split_size") + ")")
-            .collect(Collectors.toList());
-        analysis.put("working_configurations", workingConfigs);
-        
-        // Analyze common issues
-        List<String> commonIssues = new ArrayList<>();
-        if (successCount == 0) {
-            commonIssues.add("No configurations worked - likely hardware or finger placement issue");
-        }
-        if (testResults.stream().anyMatch(r -> r.get("config_name").equals("C# Four-Finger") && !(Boolean) r.get("success"))) {
-            commonIssues.add("C# Four-Finger config (300x400) failed - check finger placement");
-        }
-        analysis.put("common_issues", commonIssues);
-        
-        return analysis;
-    }
-    
-    private List<String> generateRecommendations(List<Map<String, Object>> testResults) {
-        List<String> recommendations = new ArrayList<>();
-        
-        boolean anySuccess = testResults.stream().anyMatch(r -> (Boolean) r.get("success"));
-        
-        if (!anySuccess) {
-            recommendations.add("1. Check that all four right fingers are placed clearly on the scanner");
-            recommendations.add("2. Ensure proper contact pressure - not too light, not too heavy");
-            recommendations.add("3. Clean the scanner surface");
-            recommendations.add("4. Try different finger placement positions");
-            recommendations.add("5. Check scanner hardware connection and calibration");
-        } else {
-            // Find the working configuration
-            Optional<Map<String, Object>> workingConfig = testResults.stream()
-                .filter(r -> (Boolean) r.get("success"))
-                .findFirst();
-            
-            if (workingConfig.isPresent()) {
-                String configName = (String) workingConfig.get().get("config_name");
-                String splitSize = (String) workingConfig.get().get("split_size");
-                recommendations.add("SUCCESS: Configuration '" + configName + "' (" + splitSize + ") works!");
-                recommendations.add("Use this configuration for consistent results");
-            }
-        }
-        
-        return recommendations;
+        logger.debug("Applied vertical image flip preprocessing (C# sample pattern)");
     }
 }

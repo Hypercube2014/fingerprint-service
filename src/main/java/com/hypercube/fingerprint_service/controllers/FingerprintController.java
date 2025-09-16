@@ -1147,40 +1147,6 @@ public class FingerprintController {
         }
     }
     
-    /**
-     * Debug FPSPLIT functionality with detailed diagnostics
-     * This endpoint tests FPSPLIT_DoSplit with various configurations to help diagnose issues
-     */
-    @PostMapping("/debug/fpsplit-test")
-    public ResponseEntity<Map<String, Object>> testFpSplit(
-            @RequestParam(defaultValue = "0") int channel,
-            @RequestParam(defaultValue = "1600") int width,
-            @RequestParam(defaultValue = "1500") int height,
-            @RequestParam(defaultValue = "300") int splitWidth,
-            @RequestParam(defaultValue = "400") int splitHeight,
-            @RequestParam(defaultValue = "5") int maxAttempts) {
-        
-        try {
-            logger.info("FPSPLIT Debug Test - Channel: {}, Image: {}x{}, Split: {}x{}, Max Attempts: {}", 
-                       channel, width, height, splitWidth, splitHeight, maxAttempts);
-            
-            Map<String, Object> result = deviceService.debugFpSplitTest(channel, width, height, splitWidth, splitHeight, maxAttempts);
-            
-            if ((Boolean) result.get("success")) {
-                return ResponseEntity.ok(result);
-            } else {
-                return ResponseEntity.status(500).body(result);
-            }
-            
-        } catch (Exception e) {
-            logger.error("Error in FPSPLIT debug test: {}", e.getMessage(), e);
-            return ResponseEntity.status(500).body(Map.of(
-                "success", false,
-                "message", "FPSPLIT debug test failed: " + e.getMessage(),
-                "timestamp", System.currentTimeMillis()
-            ));
-        }
-    }
 
     /**
      * Search for a template in a collection of templates
