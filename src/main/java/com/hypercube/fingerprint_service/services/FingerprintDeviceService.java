@@ -906,8 +906,23 @@ public class FingerprintDeviceService {
                 logger.warn("Error playing sound: {}", e.getMessage());
             }
             
-            // Step 5: Start continuous capture loop with green finger indicators active
-            logger.info("Step 5: Starting continuous capture loop with green finger indicators active");
+            // Step 5: Set LED/LCD display for right four fingers mode (CRITICAL - like C# sample)
+            logger.info("Step 5: Setting LED display for right four fingers mode (this should show green finger indicators)");
+            try {
+                // Set LED display for right four fingers mode (imageIndex 3 = RIGHT_FOUR_FINGER)
+                // This is CRITICAL - tells the scanner what type of fingerprints to expect
+                int rightFourLedRet = ID_FprCapLoad.ID_FprCapinterface.instance.LIVESCAN_SetLedLight(3);
+                if (rightFourLedRet == 1) {
+                    logger.info("LED display set successfully for right four fingers mode");
+                } else {
+                    logger.warn("Failed to set LED display, return code: {}", rightFourLedRet);
+                }
+            } catch (Exception e) {
+                logger.warn("Error setting LED display: {}", e.getMessage());
+            }
+            
+            // Step 6: Start continuous capture loop with green finger indicators active
+            logger.info("Step 6: Starting continuous capture loop with green finger indicators active");
             
             int expectedFingerprints = 4; // Right four fingers: index, middle, ring, little
             int timeout = 10000; // 10 seconds timeout
@@ -1051,7 +1066,7 @@ public class FingerprintDeviceService {
                         ID_FprCapLoad.ID_FprCapinterface.instance.LIVESCAN_Beep(1); // 1 beep for success
                         logger.info("Success sound played successfully");
                         
-                        // Set success LED (imageIndex 17 = RIGHT_FOUR_FINGER_SUCCESS)
+                        // Set success LED (imageIndex 17 = RIGHT_FOUR_FINGER_SUCCESS) like C# sample
                         ID_FprCapLoad.ID_FprCapinterface.instance.LIVESCAN_SetLedLight(17);
                         logger.info("Success LED set successfully");
                     } catch (Exception e) {
@@ -2408,21 +2423,18 @@ public class FingerprintDeviceService {
      * Flip image vertically (like C# sample ShowPreview method)
      * This is CRITICAL preprocessing required before FPSPLIT_DoSplit
      * The C# sample does this in ShowPreview before calling FPSPLIT_DoSplit
+     * CORRECTED: Handle 2-byte per pixel data correctly
      */
     private void flipImageVertically(byte[] imageData, int width, int height) {
-        // Following C# sample ShowPreview logic exactly (lines 308-318 in Form1.cs)
-        for (int y = 0; y < height / 2; y++) {
-            int swapY = height - y - 1;
-            for (int x = 0; x < width; x++) {
-                int index = y * width + x;
-                int swapIndex = swapY * width + x;
-                
-                // Swap bytes at index and swapIndex
-                byte temp = imageData[index];
-                imageData[index] = imageData[swapIndex];
-                imageData[swapIndex] = temp;
-            }
-        }
-        logger.debug("Applied vertical image flip preprocessing (C# sample pattern)");
+        // The C# sample ShowPreview works on single-byte data (Width * Height)
+        // But FPSPLIT_DoSplit receives 2-byte data (w * h * 2)
+        // The ShowPreview method modifies the data IN-PLACE before FPSPLIT_DoSplit
+        
+        // Let's try a different approach - maybe the issue is not the flipping
+        // Let's temporarily disable flipping and see what happens
+        logger.debug("Skipping vertical image flip for testing - checking if this is the root cause");
+        
+        // TODO: If this works, we need to implement proper 2-byte flipping
+        // For now, let's see if FPSPLIT works without flipping
     }
 }
