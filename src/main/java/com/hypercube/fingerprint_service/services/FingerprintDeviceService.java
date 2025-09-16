@@ -703,11 +703,6 @@ public class FingerprintDeviceService {
                         infosPtr.setPointer(pOutBufOffset, p);
                     }
                     
-                    // CRITICAL FIX: Apply image preprocessing like C# sample ShowPreview method
-                    // The C# sample flips the image vertically before calling FPSPLIT_DoSplit
-                    logger.debug("Attempt #{} - Applying image preprocessing (vertical flip like C# sample)", attemptCount);
-                    flipImageVertically(rawData, width, height);
-                    
                     // Perform the splitting (CORRECTED - using IntByReference like C# ref int)
                     logger.info("Attempt #{} - Calling FPSPLIT_DoSplit with image size: {}x{}, split size: {}x{}", attemptCount, width, height, splitWidth, splitHeight);
                     IntByReference fpNumRef = new IntByReference(0);
@@ -906,23 +901,8 @@ public class FingerprintDeviceService {
                 logger.warn("Error playing sound: {}", e.getMessage());
             }
             
-            // Step 5: Set LED/LCD display for right four fingers mode (CRITICAL - like C# sample)
-            logger.info("Step 5: Setting LED display for right four fingers mode (this should show green finger indicators)");
-            try {
-                // Set LED display for right four fingers mode (imageIndex 3 = RIGHT_FOUR_FINGER)
-                // This is CRITICAL - tells the scanner what type of fingerprints to expect
-                int rightFourLedRet = ID_FprCapLoad.ID_FprCapinterface.instance.LIVESCAN_SetLedLight(3);
-                if (rightFourLedRet == 1) {
-                    logger.info("LED display set successfully for right four fingers mode");
-                } else {
-                    logger.warn("Failed to set LED display, return code: {}", rightFourLedRet);
-                }
-            } catch (Exception e) {
-                logger.warn("Error setting LED display: {}", e.getMessage());
-            }
-            
-            // Step 6: Start continuous capture loop with green finger indicators active
-            logger.info("Step 6: Starting continuous capture loop with green finger indicators active");
+            // Step 5: Start continuous capture loop with green finger indicators active
+            logger.info("Step 5: Starting continuous capture loop with green finger indicators active");
             
             int expectedFingerprints = 4; // Right four fingers: index, middle, ring, little
             int timeout = 10000; // 10 seconds timeout
@@ -1004,15 +984,8 @@ public class FingerprintDeviceService {
                     infosPtr.setPointer(pOutBufOffset, p);
                 }
                 
-                // CRITICAL FIX: Apply image preprocessing like C# sample ShowPreview method
-                // The C# sample flips the image vertically before calling FPSPLIT_DoSplit
-                logger.debug("Attempt #{} - Applying image preprocessing (vertical flip like C# sample)", attemptCount);
-                flipImageVertically(rawData, width, height);
-                
                 // Perform the splitting (CORRECTED - using IntByReference like C# ref int)
                 logger.info("Attempt #{} - Calling FPSPLIT_DoSplit with image size: {}x{}, split size: {}x{}", attemptCount, width, height, splitWidth, splitHeight);
-                logger.debug("Attempt #{} - Raw data array length: {}, expected: {}", attemptCount, rawData.length, width * height * 2);
-                
                 IntByReference fpNumRef = new IntByReference(0);
                 int ret = FpSplitLoad.instance.FPSPLIT_DoSplit(
                     rawData, width, height, 1, splitWidth, splitHeight, fpNumRef, infosPtr
@@ -1020,12 +993,6 @@ public class FingerprintDeviceService {
                 
                 int fpNum = fpNumRef.getValue(); // Get the actual number of fingerprints found
                 logger.info("Attempt #{} - FPSPLIT_DoSplit returned: {}, fingerprints found: {}", attemptCount, ret, fpNum);
-                
-                // DETAILED DEBUGGING: Log more info about the failure
-                if (ret != 0 || fpNum == 0) {
-                    logger.warn("Attempt #{} - FPSPLIT_DoSplit FAILED - Return code: {}, Fingerprints found: {}", attemptCount, ret, fpNum);
-                    logger.debug("Attempt #{} - Image quality was: {}, Data length: {}", attemptCount, quality, rawData.length);
-                }
                 
                 // CORRECTED: Following C# sample pattern - ignore return value, only check fpNum
                 // The C# code only checks if (FingerNum > 0) or if (FingerNum == expectedFingerprints), not the return value
@@ -1074,7 +1041,7 @@ public class FingerprintDeviceService {
                         ID_FprCapLoad.ID_FprCapinterface.instance.LIVESCAN_Beep(1); // 1 beep for success
                         logger.info("Success sound played successfully");
                         
-                        // Set success LED (imageIndex 17 = RIGHT_FOUR_FINGER_SUCCESS) like C# sample
+                        // Set success LED (imageIndex 17 = RIGHT_FOUR_FINGER_SUCCESS)
                         ID_FprCapLoad.ID_FprCapinterface.instance.LIVESCAN_SetLedLight(17);
                         logger.info("Success LED set successfully");
                     } catch (Exception e) {
@@ -2425,41 +2392,5 @@ public class FingerprintDeviceService {
         System.arraycopy(rawData, 0, bmpData, 1078, width * height);
         
         return bmpData;
-    }
-    
-    /**
-     * Flip image vertically (like C# sample ShowPreview method)
-     * This is CRITICAL preprocessing required before FPSPLIT_DoSplit
-     * The C# sample does this in ShowPreview before calling FPSPLIT_DoSplit
-     * CORRECTED: Handle 2-byte to 1-byte conversion AND vertical flip
-     */
-    private void flipImageVertically(byte[] imageData, int width, int height) {
-        // CRITICAL INSIGHT: The C# ShowPreview method works on the FIRST width*height bytes
-        // of the 2-byte data array, effectively converting 2-byte to 1-byte data
-        // AND flipping it vertically IN-PLACE
-        
-        // The C# sample passes data[w * h * 2] to ShowPreview, but ShowPreview only
-        // processes the first w*h bytes (treating it as single-byte data)
-        
-        // Step 1: Extract single-byte data from 2-byte data (take every first byte)
-        // OR just work on the first width*height bytes directly like C# does
-        
-        // Apply vertical flip on the first width*height bytes (like C# ShowPreview)
-        for (int y = 0; y < height / 2; y++) {
-            int swapY = height - y - 1;
-            for (int x = 0; x < width; x++) {
-                int index = y * width + x;
-                int swapIndex = swapY * width + x;
-                
-                // Swap bytes at index and swapIndex (working on first width*height bytes)
-                if (index < imageData.length && swapIndex < imageData.length) {
-                    byte temp = imageData[index];
-                    imageData[index] = imageData[swapIndex];
-                    imageData[swapIndex] = temp;
-                }
-            }
-        }
-        
-        logger.debug("Applied vertical image flip preprocessing on first {} bytes (C# ShowPreview pattern)", width * height);
     }
 }
