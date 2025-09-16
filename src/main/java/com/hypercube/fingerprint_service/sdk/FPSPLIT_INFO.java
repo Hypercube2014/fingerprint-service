@@ -4,23 +4,20 @@ import com.sun.jna.Structure;
 import com.sun.jna.Pointer;
 
 /**
- * FPSPLIT_INFO structure definition matching the C# and working Java implementations
+ * FPSPLIT_INFO structure definition matching the C# implementation
  * This structure is used by the FpSplit.dll library for fingerprint splitting operations
  * 
- * CRITICAL: Based on analysis of working java_fingerdemo, the C# struct uses byte[] not Pointer
- * But for JNA memory management, we need to use manual memory allocation like the working samples
- * 
- * Structure layout:
+ * Structure layout (x64):
  * - int x (4 bytes)
  * - int y (4 bytes) 
  * - int top (4 bytes)
  * - int left (4 bytes)
  * - int angle (4 bytes)
  * - int quality (4 bytes)
- * - Pointer pOutBuf (8 bytes on x64) - This is where we write the actual data pointer
+ * - Pointer pOutBuf (8 bytes on x64)
  * 
- * Total size: 28 bytes (verified from C# Marshal.SizeOf and working java_fingerdemo)
- * pOutBuf pointer offset: 24 bytes (verified from working samples)
+ * Total size: 28 bytes on x64 architecture (matching C# Marshal.SizeOf)
+ * pOutBuf pointer offset: 24 bytes
  */
 public class FPSPLIT_INFO extends Structure {
     
@@ -30,22 +27,22 @@ public class FPSPLIT_INFO extends Structure {
     public int left;        // Left boundary
     public int angle;       // Rotation angle
     public int quality;     // Quality score
-    public Pointer pOutBuf; // Output buffer pointer - we write memory address here
+    public Pointer pOutBuf; // Output buffer pointer
     
     /**
      * Get the size of the FPSPLIT_INFO structure
-     * VERIFIED: C# Marshal.SizeOf returns 28, java_fingerdemo uses 28
+     * @return structure size in bytes
      */
     public static int getStructureSize() {
-        return 28; // 28 bytes confirmed from multiple working sources
+        return 28; // 28 bytes on x64 architecture (matching C# Marshal.SizeOf)
     }
     
     /**
      * Get the offset of the pOutBuf pointer within the structure
-     * VERIFIED: 6 ints × 4 bytes = 24 bytes offset for pOutBuf
+     * @return offset in bytes
      */
     public static int getPOutBufOffset() {
-        return 24; // 24 bytes offset confirmed from working samples
+        return 24; // 24 bytes offset for pOutBuf pointer
     }
     
     /**

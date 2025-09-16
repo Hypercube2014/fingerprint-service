@@ -591,11 +591,8 @@ public class FingerprintDeviceService {
                     // CORRECTED: Use FPSPLIT_INFO structure constants for proper memory allocation (like C# sample)
                     int size = FPSPLIT_INFO.getStructureSize(); // 28 bytes on x64
                     int maxFingerprints = 10; // Maximum fingerprints supported by FPSPLIT
-                    // CRITICAL FIX: Need extra 8 bytes for the last structure's pOutBuf pointer
-                    // Last structure at offset (9 * 28 + 24) = 276, needs 8 bytes for pointer = 284 total
-                    int totalMemoryNeeded = size * maxFingerprints + 8; // Add 8 bytes for pointer storage
-                    Pointer infosPtr = new Memory(totalMemoryNeeded); // Allocate space for structures + pointer
-                    logger.debug("Allocated {} bytes for {} structures of {} bytes each (+ 8 bytes for last pointer)", totalMemoryNeeded, maxFingerprints, size);
+                    Pointer infosPtr = new Memory(size * maxFingerprints); // Allocate space for structures
+                    logger.debug("Allocated {} bytes for {} structures of {} bytes each", size * maxFingerprints, maxFingerprints, size);
                     
                     // CORRECTED: Follow working java_fingerdemo pattern exactly (FpSplitController.java lines 62-66)
                     // This matches the approach that actually works in the java_fingerdemo
@@ -654,9 +651,8 @@ public class FingerprintDeviceService {
                         // Step 7.5: Clean up allocated memory (like C# sample and java_fingerdemo)
                         try {
                             for (int i = 0; i < maxFingerprints; i++) {
-                                int pOutBufOffset = i * size + 24; // Like java_fingerdemo
-                                Pointer ptr = infosPtr.share(pOutBufOffset);
-                                Pointer pOutBuf = ptr.getPointer(0);
+                                int pOutBufOffset = i * size + 24; // Match java_fingerdemo pattern
+                                Pointer pOutBuf = infosPtr.getPointer(pOutBufOffset);
                                 if (pOutBuf != null) {
                                     // Memory will be garbage collected by JNA - no explicit free needed
                                     logger.debug("Memory cleanup for structure {} completed", i);
@@ -866,11 +862,8 @@ public class FingerprintDeviceService {
                 // CORRECTED: Use FPSPLIT_INFO structure constants for proper memory allocation (like C# sample)
                 int size = FPSPLIT_INFO.getStructureSize(); // 28 bytes on x64
                 int maxFingerprints = 10; // Maximum fingerprints supported by FPSPLIT
-                // CRITICAL FIX: Need extra 8 bytes for the last structure's pOutBuf pointer
-                // Last structure at offset (9 * 28 + 24) = 276, needs 8 bytes for pointer = 284 total
-                int totalMemoryNeeded = size * maxFingerprints + 8; // Add 8 bytes for pointer storage
-                Pointer infosPtr = new Memory(totalMemoryNeeded); // Allocate space for structures + pointer
-                logger.debug("Allocated {} bytes for {} structures of {} bytes each (+ 8 bytes for last pointer)", totalMemoryNeeded, maxFingerprints, size);
+                Pointer infosPtr = new Memory(size * maxFingerprints); // Allocate space for structures
+                logger.debug("Allocated {} bytes for {} structures of {} bytes each", size * maxFingerprints, maxFingerprints, size);
                 
                 // CORRECTED: Follow working java_fingerdemo pattern exactly (FpSplitController.java lines 62-66)
                 // This matches the approach that actually works in the java_fingerdemo
@@ -923,10 +916,10 @@ public class FingerprintDeviceService {
                         }
                     }
                     
-                    // Step 7.5: Clean up allocated memory (like C# sample)
+                    // Step 7.5: Clean up allocated memory (like C# sample and java_fingerdemo)
                     try {
                         for (int i = 0; i < maxFingerprints; i++) {
-                            int pOutBufOffset = i * size + FPSPLIT_INFO.getPOutBufOffset();
+                            int pOutBufOffset = i * size + 24; // Match java_fingerdemo pattern
                             Pointer pOutBuf = infosPtr.getPointer(pOutBufOffset);
                             if (pOutBuf != null) {
                                 // Memory will be garbage collected by JNA - no explicit free needed
@@ -1009,12 +1002,11 @@ public class FingerprintDeviceService {
      */
     private Map<String, Object> processSplitFinger(Pointer infosPtr, int position, String fingerName, int splitWidth, int splitHeight) {
         try {
-            // CORRECTED: Follow working java_fingerdemo pattern exactly
-            // Step 1: Calculate offset like java_fingerdemo: position * size + 24
+            // CORRECTED: Follow java_fingerdemo pattern exactly for reading pointers
+            // Step 1: Calculate offset like java_fingerdemo and C# sample: position * size + 24
             int pOutBufOffset = position * FPSPLIT_INFO.getStructureSize() + 24;
-            // Step 2: Use share() approach like java_fingerdemo, then read pointer
-            Pointer ptr = infosPtr.share(pOutBufOffset);
-            Pointer pOutBufPtr = ptr.getPointer(0);
+            // Step 2: Read the pointer value (like C# Marshal.ReadIntPtr and java_fingerdemo)
+            Pointer pOutBufPtr = infosPtr.getPointer(pOutBufOffset);
             // Step 3: Read the actual data from that pointer (like C# Marshal.Copy)
             byte[] fingerData = pOutBufPtr.getByteArray(0, splitWidth * splitHeight);
             
@@ -1052,12 +1044,11 @@ public class FingerprintDeviceService {
      */
     private Map<String, Object> processSplitThumb(Pointer infosPtr, int position, String thumbName, int splitWidth, int splitHeight) {
         try {
-            // CORRECTED: Follow working java_fingerdemo pattern exactly
-            // Step 1: Calculate offset like java_fingerdemo: position * size + 24
+            // CORRECTED: Follow java_fingerdemo pattern exactly for reading pointers
+            // Step 1: Calculate offset like java_fingerdemo and C# sample: position * size + 24
             int pOutBufOffset = position * FPSPLIT_INFO.getStructureSize() + 24;
-            // Step 2: Use share() approach like java_fingerdemo, then read pointer
-            Pointer ptr = infosPtr.share(pOutBufOffset);
-            Pointer pOutBufPtr = ptr.getPointer(0);
+            // Step 2: Read the pointer value (like C# Marshal.ReadIntPtr and java_fingerdemo)
+            Pointer pOutBufPtr = infosPtr.getPointer(pOutBufOffset);
             // Step 3: Read the actual data from that pointer (like C# Marshal.Copy)
             byte[] thumbData = pOutBufPtr.getByteArray(0, splitWidth * splitHeight);
             
