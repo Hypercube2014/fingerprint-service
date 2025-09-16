@@ -112,13 +112,6 @@ public class FingerprintDeviceService {
                 );
             }
             
-            // CRITICAL: Set capture window (like C# sample) - this was missing!
-            logger.info("Setting capture window to {}x{}", width, height);
-            int windowRet = ID_FprCapLoad.ID_FprCapinterface.instance.LIVESCAN_SetCaptWindow(0, 0, 0, width, height);
-            if (windowRet != 1) {
-                logger.warn("Failed to set capture window, return code: {}", windowRet);
-            }
-            
             // Begin capture
             int ret = ID_FprCapLoad.ID_FprCapinterface.instance.LIVESCAN_BeginCapture(channel);
             if (ret != 1) {
@@ -1018,6 +1011,8 @@ public class FingerprintDeviceService {
                 
                 // Perform the splitting (CORRECTED - using IntByReference like C# ref int)
                 logger.info("Attempt #{} - Calling FPSPLIT_DoSplit with image size: {}x{}, split size: {}x{}", attemptCount, width, height, splitWidth, splitHeight);
+                logger.debug("Attempt #{} - Raw data array length: {}, expected: {}", attemptCount, rawData.length, width * height * 2);
+                
                 IntByReference fpNumRef = new IntByReference(0);
                 int ret = FpSplitLoad.instance.FPSPLIT_DoSplit(
                     rawData, width, height, 1, splitWidth, splitHeight, fpNumRef, infosPtr
@@ -1025,6 +1020,12 @@ public class FingerprintDeviceService {
                 
                 int fpNum = fpNumRef.getValue(); // Get the actual number of fingerprints found
                 logger.info("Attempt #{} - FPSPLIT_DoSplit returned: {}, fingerprints found: {}", attemptCount, ret, fpNum);
+                
+                // DETAILED DEBUGGING: Log more info about the failure
+                if (ret != 0 || fpNum == 0) {
+                    logger.warn("Attempt #{} - FPSPLIT_DoSplit FAILED - Return code: {}, Fingerprints found: {}", attemptCount, ret, fpNum);
+                    logger.debug("Attempt #{} - Image quality was: {}, Data length: {}", attemptCount, quality, rawData.length);
+                }
                 
                 // CORRECTED: Following C# sample pattern - ignore return value, only check fpNum
                 // The C# code only checks if (FingerNum > 0) or if (FingerNum == expectedFingerprints), not the return value
@@ -2430,18 +2431,35 @@ public class FingerprintDeviceService {
      * Flip image vertically (like C# sample ShowPreview method)
      * This is CRITICAL preprocessing required before FPSPLIT_DoSplit
      * The C# sample does this in ShowPreview before calling FPSPLIT_DoSplit
-     * CORRECTED: Handle 2-byte per pixel data correctly
+     * CORRECTED: Handle 2-byte to 1-byte conversion AND vertical flip
      */
     private void flipImageVertically(byte[] imageData, int width, int height) {
-        // The C# sample ShowPreview works on single-byte data (Width * Height)
-        // But FPSPLIT_DoSplit receives 2-byte data (w * h * 2)
-        // The ShowPreview method modifies the data IN-PLACE before FPSPLIT_DoSplit
+        // CRITICAL INSIGHT: The C# ShowPreview method works on the FIRST width*height bytes
+        // of the 2-byte data array, effectively converting 2-byte to 1-byte data
+        // AND flipping it vertically IN-PLACE
         
-        // Let's try a different approach - maybe the issue is not the flipping
-        // Let's temporarily disable flipping and see what happens
-        logger.debug("Skipping vertical image flip for testing - checking if this is the root cause");
+        // The C# sample passes data[w * h * 2] to ShowPreview, but ShowPreview only
+        // processes the first w*h bytes (treating it as single-byte data)
         
-        // TODO: If this works, we need to implement proper 2-byte flipping
-        // For now, let's see if FPSPLIT works without flipping
+        // Step 1: Extract single-byte data from 2-byte data (take every first byte)
+        // OR just work on the first width*height bytes directly like C# does
+        
+        // Apply vertical flip on the first width*height bytes (like C# ShowPreview)
+        for (int y = 0; y < height / 2; y++) {
+            int swapY = height - y - 1;
+            for (int x = 0; x < width; x++) {
+                int index = y * width + x;
+                int swapIndex = swapY * width + x;
+                
+                // Swap bytes at index and swapIndex (working on first width*height bytes)
+                if (index < imageData.length && swapIndex < imageData.length) {
+                    byte temp = imageData[index];
+                    imageData[index] = imageData[swapIndex];
+                    imageData[swapIndex] = temp;
+                }
+            }
+        }
+        
+        logger.debug("Applied vertical image flip preprocessing on first {} bytes (C# ShowPreview pattern)", width * height);
     }
 }
