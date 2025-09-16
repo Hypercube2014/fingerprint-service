@@ -675,7 +675,7 @@ public class FingerprintDeviceService {
                     logger.debug("Preparing split buffers and performing FPSPLIT_DoSplit");
                     
                     // CORRECTED: Use FPSPLIT_INFO structure constants for proper memory allocation (like C# sample)
-                    int size = FPSPLIT_INFO.getStructureSize(); // 32 bytes on x64 (6 ints + 1 pointer)
+                    int size = FPSPLIT_INFO.getStructureSize(); // 28 bytes on x64
                     int maxFingerprints = 10; // Maximum fingerprints supported by FPSPLIT
                     Pointer infosPtr = new Memory(size * maxFingerprints); // Allocate space for structures
                     logger.debug("Allocated {} bytes for {} structures of {} bytes each", size * maxFingerprints, maxFingerprints, size);
@@ -947,7 +947,7 @@ public class FingerprintDeviceService {
                 logger.debug("Preparing split buffers and performing FPSPLIT_DoSplit");
                 
                 // CORRECTED: Use FPSPLIT_INFO structure constants for proper memory allocation (like C# sample)
-                int size = FPSPLIT_INFO.getStructureSize(); // 32 bytes on x64 (6 ints + 1 pointer)
+                int size = FPSPLIT_INFO.getStructureSize(); // 28 bytes on x64
                 int maxFingerprints = 10; // Maximum fingerprints supported by FPSPLIT
                 Pointer infosPtr = new Memory(size * maxFingerprints); // Allocate space for structures
                 logger.debug("Allocated {} bytes for {} structures of {} bytes each", size * maxFingerprints, maxFingerprints, size);
@@ -1110,7 +1110,7 @@ public class FingerprintDeviceService {
                 finger.put("filename", storageResult.getFilename());
                 finger.put("file_path", storageResult.getFilePath());
                 finger.put("file_size", storageResult.getFileSize());
-                finger.put("image", Base64.getEncoder().encodeToString(fingerData));
+                // NOTE: Raw image data removed from response as requested - no "image" field with Base64 data
                 
                 logger.info("Successfully processed and stored {} at position {}", fingerName, position);
                 return finger;
