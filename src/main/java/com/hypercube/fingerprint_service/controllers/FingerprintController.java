@@ -421,8 +421,8 @@ public class FingerprintController {
             @RequestParam(defaultValue = "0") int channel,
             @RequestParam(defaultValue = "1600") int width,
             @RequestParam(defaultValue = "1500") int height,
-            @RequestParam(defaultValue = "256") int splitWidth,
-            @RequestParam(defaultValue = "360") int splitHeight) {
+            @RequestParam(defaultValue = "300") int splitWidth,
+            @RequestParam(defaultValue = "400") int splitHeight) {
         
         try {
             // Check platform compatibility first

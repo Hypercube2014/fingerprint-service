@@ -14,7 +14,9 @@ import java.util.HashMap;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.locks.ReentrantLock;
 
 @Component
 public class FingerprintWebSocketHandler implements WebSocketHandler {
@@ -27,6 +29,12 @@ public class FingerprintWebSocketHandler implements WebSocketHandler {
 
     // Store preview state for each session
     private final Map<String, PreviewState> previewStates = new ConcurrentHashMap<>();
+    
+    // Store scheduled preview tasks for each session
+    private final Map<String, ScheduledFuture<?>> previewTasks = new ConcurrentHashMap<>();
+
+    // Store WebSocket write locks for each session (prevents concurrent writes)
+    private final Map<String, ReentrantLock> sessionLocks = new ConcurrentHashMap<>();
 
     // Scheduled executor for preview streaming
     private final ScheduledExecutorService scheduler = Executors.newScheduledThreadPool(10);
@@ -39,6 +47,7 @@ public class FingerprintWebSocketHandler implements WebSocketHandler {
         String sessionId = session.getId();
         sessions.put(sessionId, session);
         previewStates.put(sessionId, new PreviewState());
+        sessionLocks.put(sessionId, new ReentrantLock());
 
         logger.info("WebSocket connection established: {}", sessionId);
 
@@ -153,6 +162,13 @@ public class FingerprintWebSocketHandler implements WebSocketHandler {
             // Stop preview stream
             deviceService.stopPreviewStream(channel);
             state.setPreviewRunning(false);
+            
+            // Cancel scheduled preview task
+            ScheduledFuture<?> previewTask = previewTasks.remove(sessionId);
+            if (previewTask != null && !previewTask.isCancelled()) {
+                previewTask.cancel(true);
+                logger.debug("Cancelled preview task for session: {}", sessionId);
+            }
 
             sendMessage(session, createMessage("preview_stopped", Map.of(
                     "success", true,
@@ -353,8 +369,14 @@ public class FingerprintWebSocketHandler implements WebSocketHandler {
     }
 
     private void startPreviewStreaming(WebSocketSession session, String sessionId, int channel) {
+        // Cancel any existing preview task for this session
+        ScheduledFuture<?> existingTask = previewTasks.get(sessionId);
+        if (existingTask != null && !existingTask.isCancelled()) {
+            existingTask.cancel(true);
+        }
+        
         // Schedule preview frame sending at 15 FPS (every 66ms)
-        scheduler.scheduleAtFixedRate(() -> {
+        ScheduledFuture<?> previewTask = scheduler.scheduleAtFixedRate(() -> {
             try {
                 if (!session.isOpen() || !previewStates.get(sessionId).isPreviewRunning()) {
                     return;
@@ -364,7 +386,7 @@ public class FingerprintWebSocketHandler implements WebSocketHandler {
                 Map<String, Object> frameData = deviceService.getCurrentPreviewFrame(channel);
 
                 if (frameData != null && (Boolean) frameData.get("success")) {
-                    // Send preview frame
+                    // Send preview frame with synchronized access
                     sendMessage(session, createMessage("preview", Map.of(
                             "imageData", frameData.get("image_data"),
                             "quality", frameData.get("quality"),
@@ -378,9 +400,15 @@ public class FingerprintWebSocketHandler implements WebSocketHandler {
             } catch (Exception e) {
                 logger.error("Error in preview streaming for session {}: {}", sessionId, e.getMessage());
                 // Stop preview on error
-                previewStates.get(sessionId).setPreviewRunning(false);
+                PreviewState state = previewStates.get(sessionId);
+                if (state != null) {
+                    state.setPreviewRunning(false);
+                }
             }
         }, 0, 66, TimeUnit.MILLISECONDS); // ~15 FPS
+        
+        // Store the task for later cancellation
+        previewTasks.put(sessionId, previewTask);
     }
 
     @Override
@@ -407,11 +435,20 @@ public class FingerprintWebSocketHandler implements WebSocketHandler {
             if (state != null && state.isPreviewRunning()) {
                 deviceService.stopPreviewStream(state.getChannel());
             }
+            
+            // Cancel any running preview task
+            ScheduledFuture<?> previewTask = previewTasks.remove(sessionId);
+            if (previewTask != null && !previewTask.isCancelled()) {
+                previewTask.cancel(true);
+                logger.debug("Cancelled preview task during cleanup for session: {}", sessionId);
+            }
+            
         } catch (Exception e) {
             logger.error("Error cleaning up session {}: {}", sessionId, e.getMessage());
         } finally {
             sessions.remove(sessionId);
             previewStates.remove(sessionId);
+            sessionLocks.remove(sessionId);
         }
     }
 
@@ -421,12 +458,34 @@ public class FingerprintWebSocketHandler implements WebSocketHandler {
     }
 
     private void sendMessage(WebSocketSession session, String message) {
+        String sessionId = session.getId();
+        ReentrantLock lock = sessionLocks.get(sessionId);
+        
+        if (lock == null) {
+            logger.warn("No lock found for session {}, message not sent", sessionId);
+            return;
+        }
+        
+        // Synchronize WebSocket writes to prevent TEXT_PARTIAL_WRITING state errors
+        lock.lock();
         try {
             if (session.isOpen()) {
                 session.sendMessage(new TextMessage(message));
+                logger.debug("Message sent to session {}: {} chars", sessionId, message.length());
+            } else {
+                logger.debug("Session {} is closed, message not sent", sessionId);
             }
         } catch (IOException e) {
-            logger.error("Error sending message to session {}: {}", session.getId(), e.getMessage());
+            logger.error("Error sending message to session {}: {}", sessionId, e.getMessage());
+            // If there's an IOException, the session might be broken, so clean it up
+            if (e.getMessage().contains("TEXT_PARTIAL_WRITING") || e.getMessage().contains("invalid state")) {
+                logger.warn("WebSocket in invalid state for session {}, cleaning up", sessionId);
+                cleanupSession(sessionId);
+            }
+        } catch (Exception e) {
+            logger.error("Unexpected error sending message to session {}: {}", sessionId, e.getMessage(), e);
+        } finally {
+            lock.unlock();
         }
     }
 

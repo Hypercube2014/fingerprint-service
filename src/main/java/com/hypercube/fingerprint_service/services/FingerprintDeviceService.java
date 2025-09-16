@@ -632,6 +632,7 @@ public class FingerprintDeviceService {
                 int expectedFingerprints = 2; // Two thumbs
                 
                 int attemptCount = 0;
+                int consecutiveFailures = 0; // Track consecutive FPSPLIT_DoSplit failures
                 while (System.currentTimeMillis() - startTime < timeout) {
                     attemptCount++;
                     long elapsed = System.currentTimeMillis() - startTime;
@@ -655,10 +656,10 @@ public class FingerprintDeviceService {
                     int quality = assessFingerprintQuality(rawData, width, height);
                     logger.info("Attempt #{} - Image quality score: {}", attemptCount, quality);
                     
-                    // Following C# sample pattern: Quality >= 0 for acceptance
-                    // But we use higher threshold (10) to ensure better quality for splitting
-                    if (quality < 10) {
-                        logger.warn("Attempt #{} - Image quality too low ({}), retrying... [Following Java demo threshold < 10]", attemptCount, quality);
+                    // Following C# sample pattern: Quality >= 0 for acceptance (line 859 in Form1.cs)
+                    // C# sample uses >= 0 for splitting, but >= 20 for template creation
+                    if (quality < 0) {
+                        logger.warn("Attempt #{} - No finger detected (quality: {}), retrying... [Following C# sample threshold >= 0]", attemptCount, quality);
                         try {
                             Thread.sleep(100); // Small delay before retry
                         } catch (InterruptedException e) {
@@ -712,6 +713,41 @@ public class FingerprintDeviceService {
                     
                     int fpNum = fpNumRef.getValue(); // Get the actual number of fingerprints found
                     logger.info("Attempt #{} - FPSPLIT_DoSplit returned: {}, fingerprints found: {}", attemptCount, ret, fpNum);
+                    
+                    // Add detailed diagnostics for FPSPLIT_DoSplit failures
+                    if (ret == -1) {
+                        logger.warn("Attempt #{} - FPSPLIT_DoSplit returned -1 (FAILURE). Possible causes:", attemptCount);
+                        logger.warn("  1. Split size {}x{} might be incompatible with image content", splitWidth, splitHeight);
+                        logger.warn("  2. Finger placement might be incorrect (ensure all {} fingers are clearly visible)", expectedFingerprints);
+                        logger.warn("  3. Image quality {} might be insufficient for splitting despite passing threshold", quality);
+                        logger.warn("  4. Scanner calibration might be needed");
+                        logger.warn("  C# Sample uses 300x400 for four-finger capture, 256x360 for template creation");
+                    }
+                    if (fpNum == 0) {
+                        logger.warn("Attempt #{} - No fingerprints detected in split. Check finger placement and scanner contact", attemptCount);
+                    } else if (fpNum > 0 && fpNum < expectedFingerprints) {
+                        logger.warn("Attempt #{} - Only {} out of {} expected fingerprints found. Partial detection - check finger placement", 
+                                   attemptCount, fpNum, expectedFingerprints);
+                    } else if (fpNum > expectedFingerprints) {
+                        logger.warn("Attempt #{} - More fingerprints found ({}) than expected ({}). Check for overlapping fingers", 
+                                   attemptCount, fpNum, expectedFingerprints);
+                    }
+                    
+                    // Track consecutive failures for early exit
+                    if (ret == -1 || fpNum == 0) {
+                        consecutiveFailures++;
+                        if (consecutiveFailures >= 10) {
+                            logger.error("Stopping after {} consecutive FPSPLIT failures. Likely hardware/calibration issue.", consecutiveFailures);
+                            logger.error("Recommendations:");
+                            logger.error("  1. Check scanner hardware connection and calibration");
+                            logger.error("  2. Verify thumb placement covers both thumbs clearly");
+                            logger.error("  3. Ensure proper contact pressure on scanner surface");
+                            logger.error("  4. Try cleaning scanner surface");
+                            break;
+                        }
+                    } else {
+                        consecutiveFailures = 0; // Reset on any progress
+                    }
                     
                     // CORRECTED: Following C# sample pattern - ignore return value, only check fpNum
                     // The C# code only checks if (FingerNum > 0) or if (FingerNum == expectedFingerprints), not the return value
@@ -907,6 +943,7 @@ public class FingerprintDeviceService {
             int expectedFingerprints = 4; // Right four fingers: index, middle, ring, little
             int timeout = 10000; // 10 seconds timeout
             int attemptCount = 0;
+            int consecutiveFailures = 0; // Track consecutive FPSPLIT_DoSplit failures
             long startTime = System.currentTimeMillis();
             
             while (System.currentTimeMillis() - startTime < timeout) {
@@ -937,9 +974,10 @@ public class FingerprintDeviceService {
                 int quality = assessFingerprintQuality(rawData, width, height);
                 logger.info("Attempt #{} - Image quality score: {}", attemptCount, quality);
                 
-                // Following Java demo pattern: < 10 = bad quality, requires retry
-                if (quality < 10) { // Java demo threshold for "place finger properly"
-                    logger.warn("Attempt #{} - Image quality too low ({}), retrying... [Following Java demo threshold < 10]", attemptCount, quality);
+                // Following C# sample pattern: Quality >= 0 for acceptance (line 859 in Form1.cs)
+                // C# sample uses >= 0 for splitting, but >= 20 for template creation
+                if (quality < 0) {
+                    logger.warn("Attempt #{} - No finger detected (quality: {}), retrying... [Following C# sample threshold >= 0]", attemptCount, quality);
                     try {
                         Thread.sleep(100);
                     } catch (InterruptedException e) {
@@ -993,6 +1031,41 @@ public class FingerprintDeviceService {
                 
                 int fpNum = fpNumRef.getValue(); // Get the actual number of fingerprints found
                 logger.info("Attempt #{} - FPSPLIT_DoSplit returned: {}, fingerprints found: {}", attemptCount, ret, fpNum);
+                
+                // Add detailed diagnostics for FPSPLIT_DoSplit failures
+                if (ret == -1) {
+                    logger.warn("Attempt #{} - FPSPLIT_DoSplit returned -1 (FAILURE). Possible causes:", attemptCount);
+                    logger.warn("  1. Split size {}x{} might be incompatible with image content", splitWidth, splitHeight);
+                    logger.warn("  2. Finger placement might be incorrect (ensure all {} right fingers are clearly visible)", expectedFingerprints);
+                    logger.warn("  3. Image quality {} might be insufficient for splitting despite passing threshold", quality);
+                    logger.warn("  4. Scanner calibration might be needed");
+                    logger.warn("  C# Sample uses 300x400 for four-finger capture, 256x360 for template creation");
+                }
+                if (fpNum == 0) {
+                    logger.warn("Attempt #{} - No fingerprints detected in split. Check finger placement and scanner contact", attemptCount);
+                } else if (fpNum > 0 && fpNum < expectedFingerprints) {
+                    logger.warn("Attempt #{} - Only {} out of {} expected fingerprints found. Partial detection - check finger placement", 
+                               attemptCount, fpNum, expectedFingerprints);
+                } else if (fpNum > expectedFingerprints) {
+                    logger.warn("Attempt #{} - More fingerprints found ({}) than expected ({}). Check for overlapping fingers", 
+                               attemptCount, fpNum, expectedFingerprints);
+                }
+                
+                // Track consecutive failures for early exit
+                if (ret == -1 || fpNum == 0) {
+                    consecutiveFailures++;
+                    if (consecutiveFailures >= 10) {
+                        logger.error("Stopping after {} consecutive FPSPLIT failures. Likely hardware/calibration issue.", consecutiveFailures);
+                        logger.error("Recommendations:");
+                        logger.error("  1. Check scanner hardware connection and calibration");
+                        logger.error("  2. Verify finger placement covers all four right fingers clearly");
+                        logger.error("  3. Ensure proper contact pressure on scanner surface");
+                        logger.error("  4. Try cleaning scanner surface");
+                        break;
+                    }
+                } else {
+                    consecutiveFailures = 0; // Reset on any progress
+                }
                 
                 // CORRECTED: Following C# sample pattern - ignore return value, only check fpNum
                 // The C# code only checks if (FingerNum > 0) or if (FingerNum == expectedFingerprints), not the return value
